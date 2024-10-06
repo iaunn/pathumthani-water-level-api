@@ -98,16 +98,32 @@ def draw_level_lines(image, water_level_mapping, y_lowest_yellow):
         cv2.line(image, (0, y_coord), (image.shape[1], y_coord), line_color, 2)
         cv2.putText(image, f"{level}m", (950, y_coord - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
 
-def capture_frame_from_video(video_url):
-    """Capture a frame from the video stream."""
+def capture_last_frame_from_video(video_url):
+    """Capture the last frame from the video stream."""
     cap = cv2.VideoCapture(video_url)
-    ret, frame = cap.read()
-    if ret:
-        return frame
-    else:
-        print("Failed to capture the video frame.")
+    
+    if not cap.isOpened():
+        print(f"Failed to open video: {video_url}")
         return None
+    
+    # Get the total number of frames in the video
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if total_frames > 0:
+        # Seek to the last frame (total_frames - 1 because frames are zero-indexed)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+    
+        # Capture the frame
+        ret, frame = cap.read()
+        
+        if ret:
+            cap.release()
+            return frame
+        else:
+            print("Failed to capture the last frame.")
+    
     cap.release()
+    return None
 
 def save_image(image, postfix=""):
     """Save the image to the specified directory with a timestamped filename."""
@@ -174,7 +190,7 @@ def get_status():
     if video_url:
         print(f"Video URL: {video_url}")
 
-        original_frame = capture_frame_from_video(video_url)
+        original_frame = capture_last_frame_from_video(video_url)
 
         if original_frame is not None:
             y_lowest_yellow = detect_yellow_region(original_frame)
