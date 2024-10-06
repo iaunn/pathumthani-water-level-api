@@ -21,6 +21,7 @@ metadata_url = base_url + "load.jsp"
 
 # Define the water level pixel mappings
 water_level_mapping = {
+    990: 1.70,
     950: 1.80,
     922: 1.90,
     892: 2.00,
@@ -69,25 +70,15 @@ def get_video_url():
 
 def detect_yellow_region(image, x_start=680, x_end=800):
     """Detect the lowest yellow region within the specified x-axis range."""
-    # Convert image to HSV (Hue, Saturation, Value) color space
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    
-    # Define yellow color range in HSV
     lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([30, 255, 255])
-    
-    # Threshold the image to get only yellow colors
+    upper_yellow = np.array([90, 255, 255])
     mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-    
-    # Focus only on the specified x-axis range (680 to 800)
-    mask[:, :x_start] = 0  # Zero out everything left of x_start
-    mask[:, x_end:] = 0    # Zero out everything right of x_end
-
-    # Find contours of the yellow region
+    mask[:, :x_start] = 0
+    mask[:, x_end:] = 0
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     if contours:
-        # Get the contour with the lowest y-coordinate (this should correspond to the lowest visible water level)
         lowest_contour = max(contours, key=lambda cnt: cv2.boundingRect(cnt)[1])  # Max y-coordinate
         _, y, _, _ = cv2.boundingRect(lowest_contour)
         return y
@@ -101,22 +92,11 @@ def get_water_level_from_y(y, water_level_mapping):
     return None
 
 def draw_level_lines(image, water_level_mapping, y_lowest_yellow):
-    """Draw horizontal lines for each water level.
-    
-    Lines above the water level are green, and lines below are red.
-    """
+    """Draw horizontal lines for each water level."""
     for y_coord, level in water_level_mapping.items():
-        # Set line color: green if above the water level, red if below
-        if y_coord <= y_lowest_yellow:
-            line_color = (0, 255, 0)  # Green for above
-        else:
-            line_color = (0, 0, 255)  # Red for below
-
-        # Draw the line
+        line_color = (0, 255, 0) if y_coord <= y_lowest_yellow else (0, 0, 255)  # Green for above, red for below
         cv2.line(image, (0, y_coord), (image.shape[1], y_coord), line_color, 2)
-        
-        # Put the level text next to the line
-        cv2.putText(image, f"{level}m", (10, y_coord - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
+        cv2.putText(image, f"{level}m", (950, y_coord - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
 
 def capture_frame_from_video(video_url):
     """Capture a frame from the video stream."""
@@ -131,56 +111,95 @@ def capture_frame_from_video(video_url):
 
 def save_image(image, postfix=""):
     """Save the image to the specified directory with a timestamped filename."""
-    # Generate a timestamped filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     image_filename = f"water_level_image_{timestamp}{postfix}.jpg"
     save_path = os.path.join(save_directory, image_filename)
-    
+
     cv2.imwrite(save_path, image)
     return image_filename  # Return only the filename for easier URL construction
+
+def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
+    """Generate an image that shows only the water level line matching the detected level."""
+    # Create a blank image with the same dimensions as the original
+    water_level_image = original_image.copy()
+
+    if water_level is not None:  # Ensure water_level is valid
+        # Determine the exact y-coordinate for the interpolated water level
+        y_coords = sorted(water_level_mapping.keys())  # Ensure we have the y-coordinates sorted
+        y_coord_for_water_level = None
+
+        for i in range(len(y_coords) - 1):
+            if water_level_mapping[y_coords[i]] >= water_level > water_level_mapping[y_coords[i + 1]]:
+                # Linear interpolation for exact position
+                lower_y_coord = y_coords[i]
+                upper_y_coord = y_coords[i + 1]
+                lower_level = water_level_mapping[lower_y_coord]
+                upper_level = water_level_mapping[upper_y_coord]
+
+                # Calculate exact y-coordinate for the water level
+                y_coord_for_water_level = lower_y_coord + (upper_y_coord - lower_y_coord) * (water_level - lower_level) / (upper_level - lower_level)
+                break
+
+        # Draw the line at the calculated y-coordinate
+        if y_coord_for_water_level is not None:
+            line_color = (0, 255, 0)  # Green for the matching level
+            cv2.line(water_level_image, (0, int(y_coord_for_water_level)), (water_level_image.shape[1], int(y_coord_for_water_level)), line_color, 2)
+            cv2.putText(water_level_image, f"{water_level:.2f}m", (950, int(y_coord_for_water_level) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
+
+    return water_level_image
+
+def get_interpolated_water_level(y, water_level_mapping):
+    """Map the y-coordinate to the corresponding water level using interpolation."""
+    # Sort the water level mapping by y-coordinates
+    y_coords = sorted(water_level_mapping.keys())
+    # Check if the y-coordinate is below the lowest or above the highest
+    if y >= y_coords[0]:
+        for i in range(len(y_coords) - 1):
+            if y_coords[i + 1] >= y > y_coords[i]:  # Found the interval
+                # Interpolate between the two levels
+                level_low = water_level_mapping[y_coords[i]]
+                level_high = water_level_mapping[y_coords[i + 1]]
+
+                # Calculate exact level using linear interpolation
+                interpolated_level = level_low + (level_high - level_low) * (y - y_coords[i]) / (y_coords[i + 1] - y_coords[i])
+                return interpolated_level
+    return None
 
 @app.route('/status', methods=['GET'])
 @cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
 def get_status():
     """Endpoint to get the water level and return image URLs."""
-    # Step 1: Get the dynamic video URL
     video_url = get_video_url()
 
     if video_url:
         print(f"Video URL: {video_url}")
-        
-        # Step 2: Capture a frame from the video
+
         original_frame = capture_frame_from_video(video_url)
-        
+
         if original_frame is not None:
-            # Step 3: Detect the lowest yellow region in the River Level Measurement
             y_lowest_yellow = detect_yellow_region(original_frame)
-            
+
             if y_lowest_yellow is not None:
-                # Step 4: Get water level from the y-coordinate
-                water_level = get_water_level_from_y(y_lowest_yellow, water_level_mapping)
+                water_level = get_interpolated_water_level(y_lowest_yellow, water_level_mapping)
                 
-                # Step 5: Draw level lines for each predefined water level on a copy of the original frame
                 processed_frame = original_frame.copy()
                 draw_level_lines(processed_frame, water_level_mapping, y_lowest_yellow)
-                
-                # Step 6: Save the processed image with a timestamped filename
-                processed_image_filename = save_image(processed_frame, "_processed")
 
-                # Step 7: Save the original image without any lines
+                processed_image_filename = save_image(processed_frame, "_processed")
                 original_image_filename = save_image(original_frame, "_original")
 
-                # Get the full request URL
-                base_url = request.host_url
+                # Generate the water level line image with the detected water level
+                water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
+                water_level_line_image_filename = save_image(water_level_line_image, "_level_lines")
 
-                # Get the current timestamp
+                base_url = request.host_url
                 unix_timestamp = int(datetime.now().timestamp())
 
-                # Return water level and URLs of both images
                 return jsonify({
                     "water_level": water_level,
                     "original_image_url": f"{base_url}images/{original_image_filename}",
                     "processed_image_url": f"{base_url}images/{processed_image_filename}",
+                    "water_level_line_image_url": f"{base_url}images/{water_level_line_image_filename}",
                     "timestamp": unix_timestamp
                 })
             else:
