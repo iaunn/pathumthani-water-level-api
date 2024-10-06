@@ -50,7 +50,7 @@ docker build -t pathumthani-water-level-api .
 ```
 3. รัน Docker container:
 ```bash
-docker run -d -it -p 5000:5000 --name pathumthani-water-level-api pathumthani-water-level-api
+docker run -d -it -p 5000:5000 -e CACHE_TTL=300 --name pathumthani-water-level-api pathumthani-water-level-api
 ```
 
 ### หมายเหตุ

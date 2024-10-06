@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import requests
 import os
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, send_from_directory, request
 from datetime import datetime
 from flask_caching import Cache
 
@@ -129,11 +129,11 @@ def capture_frame_from_video(video_url):
         return None
     cap.release()
 
-def save_image(image):
+def save_image(image, postfix=""):
     """Save the image to the specified directory with a timestamped filename."""
     # Generate a timestamped filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_filename = f"water_level_image_{timestamp}.jpg"
+    image_filename = f"water_level_image_{timestamp}{postfix}.jpg"
     save_path = os.path.join(save_directory, image_filename)
     
     cv2.imwrite(save_path, image)
@@ -165,19 +165,23 @@ def get_status():
                 draw_level_lines(processed_frame, water_level_mapping, y_lowest_yellow)
                 
                 # Step 6: Save the processed image with a timestamped filename
-                processed_image_filename = save_image(processed_frame)
+                processed_image_filename = save_image(processed_frame, "_processed")
 
                 # Step 7: Save the original image without any lines
-                original_image_filename = save_image(original_frame)
+                original_image_filename = save_image(original_frame, "_original")
 
                 # Get the full request URL
                 base_url = request.host_url
+
+                # Get the current timestamp
+                unix_timestamp = int(datetime.now().timestamp())
 
                 # Return water level and URLs of both images
                 return jsonify({
                     "water_level": water_level,
                     "original_image_url": f"{base_url}images/{original_image_filename}",
-                    "processed_image_url": f"{base_url}images/{processed_image_filename}"
+                    "processed_image_url": f"{base_url}images/{processed_image_filename}",
+                    "timestamp": unix_timestamp
                 })
             else:
                 return jsonify({"error": "Yellow region not detected."}), 500
