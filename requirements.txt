@@ -2,3 +2,4 @@ flask
 opencv-python-headless
 numpy
 requests
+Flask-Caching
