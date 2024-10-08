@@ -21,7 +21,10 @@ metadata_url = base_url + "load.jsp"
 
 # Define the water level pixel mappings
 water_level_mapping = {
-    990: 1.70,
+    1080: 1.40,
+    1045: 1.50,
+    1017: 1.60,
+    984: 1.70,
     950: 1.80,
     922: 1.90,
     892: 2.00,
