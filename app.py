@@ -19,6 +19,9 @@ CACHE_TTL = int(os.getenv('CACHE_TTL', 300))
 base_url = "http://101.109.253.60:8999/"
 metadata_url = base_url + "load.jsp"
 
+# Initialize previous water level
+previous_water_level = 0
+
 # Define the water level pixel mappings
 water_level_mapping = {
     1080: 1.40,
@@ -198,9 +201,15 @@ def get_status():
         if original_frame is not None:
             y_lowest_yellow = detect_yellow_region(original_frame)
 
-            if y_lowest_yellow is not None:
+            # If the yellow region is not detected, use the previous water level
+            if y_lowest_yellow is None:
+                water_level = previous_water_level  # Fallback to previous level
+                print("Yellow region not detected, using previous water level:", water_level)
+            else:
+                # Detect water level from the image
                 water_level = get_interpolated_water_level(y_lowest_yellow, water_level_mapping)
-                
+                previous_water_level = water_level  # Update the previous water level with the new one
+
                 processed_frame = original_frame.copy()
                 draw_level_lines(processed_frame, water_level_mapping, y_lowest_yellow)
 
