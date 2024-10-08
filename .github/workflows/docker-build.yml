@@ -23,15 +23,15 @@ jobs:
 
       # Step 3: Build the Docker image
       - name: Build Docker image
-        run: docker build . -t ghcr.io/${{ github.repository }}/pathumthani-water-level-api:${{ github.sha }}
+        run: docker build . -t ghcr.io/${{ github.repository }}:${{ github.sha }}
 
       # Step 4: Push the Docker image to GitHub Packages
       - name: Push Docker image
-        run: docker push ghcr.io/${{ github.repository }}/pathumthani-water-level-api:${{ github.sha }}
+        run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
 
       # Step 5: Optionally, tag and push a 'latest' tag
       - name: Tag and push 'latest'
         if: github.ref == 'refs/heads/main'  # Only tag 'latest' for main branch
         run: |
-          docker tag ghcr.io/${{ github.repository }}/pathumthani-water-level-api:${{ github.sha }} ghcr.io/${{ github.repository }}/pathumthani-water-level-api:latest
-          docker push ghcr.io/${{ github.repository }}/pathumthani-water-level-api:latest
+          docker tag ghcr.io/${{ github.repository }}:${{ github.sha }} ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }}:latest
