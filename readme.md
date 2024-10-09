@@ -37,7 +37,7 @@ Endpoint นี้จะจับภาพจากฟีดวิดีโอ C
 - Python 3.7 ขึ้นไป
 - Docker
 
-### Deploy from prebuild Docker
+### Deploy from pre-built Docker images
 ```bash
 docker pull ghcr.io/iaunn/pathumthani-water-level-api
 docker run -d -it -p 5000:5000 -e CACHE_TTL=300 --name pathumthani-water-level-api ghcr.io/iaunn/pathumthani-water-level-api
