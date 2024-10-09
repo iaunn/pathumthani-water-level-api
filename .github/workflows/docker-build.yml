@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Push Multi-Platform Docker Image
 
 on:
   push:
@@ -16,25 +16,41 @@ jobs:
       packages: write
 
     steps:
-      # Step 1: Checkout the repository
+      # Step 1: Set up QEMU for multi-platform builds
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Step 2: Set up Docker Buildx for multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      # Step 3: Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Log in to GitHub Docker registry
+      # Step 4: Log in to GitHub Docker registry
       - name: Log in to GitHub Docker registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      # Step 3: Build the Docker image
-      - name: Build Docker image
-        run: docker build . -t ghcr.io/${{ github.repository }}:${{ github.sha }}
+      # Step 5: Create and use a new Buildx builder
+      - name: Create Buildx builder
+        run: docker buildx create --use --name multi-builder
 
-      # Step 4: Push the Docker image to GitHub Packages
-      - name: Push Docker image
-        run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+      # Step 6: Inspect the builder to verify platforms support
+      - name: Inspect Buildx builder
+        run: docker buildx inspect --bootstrap
 
-      # Step 5: Optionally, tag and push a 'latest' tag
-      - name: Tag and push 'latest'
-        if: github.ref == 'refs/heads/main'  # Only tag 'latest' for main branch
+      # Step 7: Build and push Docker image for multiple platforms
+      - name: Build and Push Multi-Platform Docker Image
         run: |
-          docker tag ghcr.io/${{ github.repository }}:${{ github.sha }} ghcr.io/${{ github.repository }}:latest
-          docker push ghcr.io/${{ github.repository }}:latest
+          docker buildx build \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 \
+            --push \
+            --tag ghcr.io/${{ github.repository }}:${{ github.sha }} \
+            --tag ghcr.io/${{ github.repository }}:latest .
+
+      # Optional Step 8: Clean up Buildx builder after build
+      - name: Remove Buildx builder
+        run: docker buildx rm multi-builder
