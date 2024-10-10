@@ -187,6 +187,29 @@ def get_interpolated_water_level(y, water_level_mapping):
                 return interpolated_level
     return None
 
+def detect_objects(image):
+    # Convert the image to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply a Gaussian blur to reduce noise and smooth the image
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Detect edges in the image using Canny edge detection
+    edges = cv2.Canny(blurred, 50, 150)
+
+    # Find contours in the edge-detected image
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Loop over the contours and filter out based on size/shape
+    for contour in contours:
+        if cv2.contourArea(contour) > 500:  # Adjust this threshold based on object size
+            # Draw the contour and bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    save_image(image, "object", "_processed")
+    return None
+
+
 @app.route('/status', methods=['GET'])
 @cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
 def get_status():
@@ -222,7 +245,7 @@ def get_status():
 
                 base_url = request.host_url
                 unix_timestamp = int(datetime.now().timestamp())
-
+                detect_objects(original_frame.copy())
                 return jsonify({
                     "water_level": water_level,
                     "original_image_url": f"{base_url}images/{original_image_filename}",
