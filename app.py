@@ -230,8 +230,6 @@ def get_status():
                     "water_level_line_image_url": f"{base_url}images/{water_level_line_image_filename}",
                     "timestamp": unix_timestamp
                 })
-            else:
-                return jsonify({"error": "Yellow region not detected."}), 500
         else:
             return jsonify({"error": "Failed to capture frame from video."}), 500
     else:
