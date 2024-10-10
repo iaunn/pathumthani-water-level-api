@@ -131,10 +131,10 @@ def capture_last_frame_from_video(video_url):
     cap.release()
     return None
 
-def save_image(image, postfix=""):
+def save_image(image, prefix="", postfix=""):
     """Save the image to the specified directory with a timestamped filename."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_filename = f"water_level_image_{timestamp}{postfix}.jpg"
+    image_filename = f"{prefix}_{timestamp}{postfix}.jpg"
     save_path = os.path.join(save_directory, image_filename)
 
     cv2.imwrite(save_path, image)
@@ -213,12 +213,12 @@ def get_status():
                 processed_frame = original_frame.copy()
                 draw_level_lines(processed_frame, water_level_mapping, y_lowest_yellow)
 
-                processed_image_filename = save_image(processed_frame, "_processed")
-                original_image_filename = save_image(original_frame, "_original")
+                processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
+                original_image_filename = save_image(original_frame, "water_level_image", "_original")
 
                 # Generate the water level line image with the detected water level
                 water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
-                water_level_line_image_filename = save_image(water_level_line_image, "_level_lines")
+                water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
 
                 base_url = request.host_url
                 unix_timestamp = int(datetime.now().timestamp())
