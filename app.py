@@ -5,6 +5,8 @@ import os
 from flask import Flask, jsonify, send_from_directory, request
 from datetime import datetime
 from flask_caching import Cache
+from ultralytics import YOLO
+import torch
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -187,6 +189,21 @@ def get_interpolated_water_level(y, water_level_mapping):
                 return interpolated_level
     return None
 
+def detect_objects(image):
+    # Convert the image to grayscale
+    model = YOLO('yolov10n.pt')  
+    # Perform inference
+    results = model([image])  # Pass a list of images to the model
+    # Print detected objects with class names and confidence scores
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename= f"object_{timestamp}_processed.jpg"
+    for result in results:
+        for result in results:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result.save(filename=f"./images/{filename}")  
+    return filename
+
+
 @app.route('/status', methods=['GET'])
 @cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
 def get_status():
@@ -222,12 +239,13 @@ def get_status():
 
                 base_url = request.host_url
                 unix_timestamp = int(datetime.now().timestamp())
-
+                object_detected_image = detect_objects(original_frame.copy())
                 return jsonify({
                     "water_level": water_level,
                     "original_image_url": f"{base_url}images/{original_image_filename}",
                     "processed_image_url": f"{base_url}images/{processed_image_filename}",
                     "water_level_line_image_url": f"{base_url}images/{water_level_line_image_filename}",
+                    "object_detected_image_url": f"{base_url}images/{object_detected_image}",
                     "timestamp": unix_timestamp
                 })
         else:
