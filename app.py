@@ -23,7 +23,9 @@ metadata_url = base_url + "load.jsp"
 previous_water_level = 0
 
 # Define the water level pixel mappings
-water_level_mapping = {
+original_water_level_mapping = {
+    1297: 0.40,
+    1120: 1.30,
     1080: 1.40,
     1045: 1.50,
     1017: 1.60,
@@ -52,6 +54,15 @@ water_level_mapping = {
     53: 3.90,
     20: 4.00,
 }
+
+# Define level offset
+level_offset = -217
+
+# Create new mapping by adjusting the key with the level_offset
+water_level_mapping = {key + level_offset: value for key, value in original_water_level_mapping.items()}
+
+# Output the new adjusted water level mapping
+print(water_level_mapping)
 
 # Directory to save images
 save_directory = "images"
