@@ -3,3 +3,5 @@ opencv-python-headless
 numpy
 requests
 Flask-Caching
+torch
+ultralytics
