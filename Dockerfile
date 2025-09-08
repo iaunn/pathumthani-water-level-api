@@ -18,6 +18,7 @@ EXPOSE 5000
 
 # Define environment variable to run Flask in production
 ENV FLASK_ENV=production
+ENV OPENCV_FFMPEG_LOGLEVEL=-8
 
 # Run app.py when the container launches
 CMD ["python", "app.py"]
