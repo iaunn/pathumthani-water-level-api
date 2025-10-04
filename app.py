@@ -20,6 +20,9 @@ cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
 # Get TTL from environment variable or set a default
 CACHE_TTL = int(os.getenv('CACHE_TTL', 300))
 
+# Maximum number of images to keep (delete older ones automatically)
+MAX_KEEP = int(os.getenv("MAX_KEEP_IMAGES", 200))
+
 # Base URL for fetching HLS playlist
 base_url = "http://101.109.253.60:8999/"
 playlist_url = base_url + "playlist.m3u8"
@@ -260,6 +263,27 @@ def save_image(image, prefix="", postfix=""):
     cv2.imwrite(save_path, image)
     return image_filename
 
+def rotate_images(dir_="images"):
+    """
+    Delete old images, keeping only the most recent MAX_KEEP images.
+    Files are sorted by filename which contains timestamp.
+    """
+    try:
+        files = sorted([f for f in os.listdir(dir_) if f.endswith(".jpg")])
+        if len(files) > MAX_KEEP:
+            files_to_delete = files[:-MAX_KEEP]
+            deleted_count = 0
+            for f in files_to_delete:
+                try:
+                    file_path = os.path.join(dir_, f)
+                    os.remove(file_path)
+                    deleted_count += 1
+                except OSError as e:
+                    print(f"Error deleting file {f}: {e}")
+            print(f"Image rotation: Deleted {deleted_count} old images, keeping {MAX_KEEP} most recent")
+    except OSError as e:
+        print(f"Error during image rotatation: {e}")
+
 def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
     """Generate an image that shows only the water level line matching the detected level."""
     water_level_image = original_image.copy()
@@ -305,6 +329,10 @@ def get_status():
         print("Yellow region not detected, using previous water level:", water_level)
 
         original_image_filename = save_image(original_frame, "water_level_image", "_original")
+        
+        # Clean up old images to maintain MAX_KEEP limit
+        rotate_images()
+        
         base_ = request.host_url
         unix_timestamp = int(datetime.now().timestamp())
 
@@ -329,6 +357,9 @@ def get_status():
     original_image_filename = save_image(original_frame, "water_level_image", "_original")
     water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
     water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
+    
+    # Clean up old images to maintain MAX_KEEP limit
+    rotate_images()
 
     base_ = request.host_url
     unix_timestamp = int(datetime.now().timestamp())
