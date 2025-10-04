@@ -36,9 +36,14 @@ previous_water_level = 0.0
 # Pixel is measured from top of the image (y increases downward)
 # Ensure points are sorted by pixel (descending level with increasing pixel)
 CAL_POINTS = [
-    (20,  4.00),
     (34,  3.90),
-    (235, 3.00),
+    (55,  3.80),
+    (143, 3.40),
+    (185, 3.20),
+    (143, 3.40),
+    (224, 3.00),
+    (263, 2.80),
+    (282, 2.70),
     (317, 2.50),
 ]
 # sort by pixel ascending just in case
