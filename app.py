@@ -25,67 +25,106 @@ base_url = "http://101.109.253.60:8999/"
 playlist_url = base_url + "playlist.m3u8"
 
 # Initialize previous water level
-previous_water_level = 0
+previous_water_level = 0.0
 
-# Define the water level pixel mappings
-original_water_level_mapping = {
-    400: 0.40,
-    311: 1.30,
-    297: 1.40,
-    287: 1.50,
-    276: 1.60,
-    263: 1.70,
-    250: 1.80,
-    236: 1.90,
-    230: 2.00,
-    205: 2.10,
-    191: 2.20,
-    176: 2.30,
-    159: 2.40,
-    144: 2.50,
-    126: 2.60,
-    108: 2.70,
-    90: 2.80,
-    71: 2.90,
-    52: 3.00,
-    33: 3.10,
-    12: 3.20
-}
+# =========================
+# Calibration (NEW MODEL)
+# =========================
+# Pixel is measured from top of the image (y increases downward)
+# Ensure points are sorted by pixel (descending level with increasing pixel)
+CAL_POINTS = [
+    (20,  4.00),
+    (34,  3.90),
+    (235, 3.00),
+    (317, 2.50),
+]
+# sort by pixel ascending just in case
+CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])  # [(20,4.0), (34,3.9), (235,3.0), (317,2.5)]
 
-# Define level offset
-level_offset = 0
+# Useful bounds
+PIX_MIN, LVL_MAX = CAL_POINTS[0]
+PIX_MAX, LVL_MIN = CAL_POINTS[-1]
 
-# Create new mapping by adjusting the key with the level_offset
-water_level_mapping = {key + level_offset: value for key, value in original_water_level_mapping.items()}
+def pixel_to_level(y: float) -> float:
+    """
+    Piecewise-linear interpolation from pixel (y, from top) to water level (m).
+    Extrapolates using the nearest segment if y is outside calibration range.
+    """
+    # exact match
+    for py, lv in CAL_POINTS:
+        if y == py:
+            return lv
 
-# Output the new adjusted water level mapping
-print(water_level_mapping)
+    # choose segment
+    if y < CAL_POINTS[0][0]:
+        # above top point -> extrapolate using first segment
+        (x1, y1), (x2, y2) = CAL_POINTS[0], CAL_POINTS[1]
+    elif y > CAL_POINTS[-1][0]:
+        # below bottom point -> extrapolate using last segment
+        (x1, y1), (x2, y2) = CAL_POINTS[-2], CAL_POINTS[-1]
+    else:
+        # find adjacent calibration points
+        for i in range(len(CAL_POINTS) - 1):
+            x1, y1 = CAL_POINTS[i]
+            x2, y2 = CAL_POINTS[i + 1]
+            if x1 <= y <= x2:
+                break
+
+    # linear interpolation y = m*x + b  (but here variables are renamed)
+    # we want level = y1 + (y2 - y1) * ( (y - x1) / (x2 - x1) )
+    if x2 == x1:
+        return y1  # degenerate safety
+    t = (y - x1) / (x2 - x1)
+    return y1 + (y2 - y1) * t
+
+def level_to_pixel(level_m: float) -> float:
+    """
+    Inverse mapping: given a level (m), return pixel y (from top).
+    Piecewise-linear using the same calibration points.
+    """
+    # exact match
+    for py, lv in CAL_POINTS:
+        if abs(level_m - lv) < 1e-9:
+            return py
+
+    # choose segment (levels decrease with pixel)
+    levels = [lv for _, lv in CAL_POINTS]
+    if level_m > levels[0]:
+        (x1, y1), (x2, y2) = CAL_POINTS[0], CAL_POINTS[1]
+    elif level_m < levels[-1]:
+        (x1, y1), (x2, y2) = CAL_POINTS[-2], CAL_POINTS[-1]
+    else:
+        for i in range(len(CAL_POINTS) - 1):
+            x1, y1 = CAL_POINTS[i]
+            x2, y2 = CAL_POINTS[i + 1]
+            # y1 >= level >= y2 in normal case
+            if (y1 >= level_m >= y2) or (y1 <= level_m <= y2):
+                break
+
+    if y1 == y2:
+        return x1
+    t = (level_m - y1) / (y2 - y1)
+    return x1 + (x2 - x1) * t
 
 # Directory to save images
 save_directory = "images"
-
-# Ensure the directory exists
 if not os.path.exists(save_directory):
     os.makedirs(save_directory)
 
 def cache_key():
     """Return a unique cache key based on the request URL path."""
-    return request.path  # Use only the URL path as the cache key
+    return request.path
 
 def parse_hls_playlist(playlist_content):
     """Parse HLS playlist content and return list of video segments."""
     segments = []
     lines = playlist_content.strip().split('\n')
-    
     for line in lines:
         line = line.strip()
-        # Skip comments and empty lines
         if line.startswith('#') or not line:
             continue
-        # Check if it's a video segment (usually ends with .ts, .mp4, etc.)
         if any(line.endswith(ext) for ext in ['.ts', '.mp4', '.m4s', '.webm']):
             segments.append(line)
-    
     return segments
 
 def get_video_url():
@@ -95,13 +134,8 @@ def get_video_url():
         if response.status_code == 200:
             segments = parse_hls_playlist(response.text)
             if segments:
-                # Get the last segment
                 last_segment = segments[-1]
-                # If the segment URL is relative, make it absolute
-                if last_segment.startswith('http'):
-                    return last_segment
-                else:
-                    return base_url + last_segment
+                return last_segment if last_segment.startswith('http') else base_url + last_segment
     except requests.RequestException as e:
         print(f"Error fetching playlist: {e}")
     return None
@@ -113,15 +147,10 @@ def get_video_segments():
         if response.status_code == 200:
             segments = parse_hls_playlist(response.text)
             if segments:
-                # Return the last few segments as fallback options
                 recent_segments = segments[-3:] if len(segments) >= 3 else segments
-                # Convert relative URLs to absolute
                 absolute_segments = []
                 for segment in recent_segments:
-                    if segment.startswith('http'):
-                        absolute_segments.append(segment)
-                    else:
-                        absolute_segments.append(base_url + segment)
+                    absolute_segments.append(segment if segment.startswith('http') else base_url + segment)
                 return absolute_segments
     except requests.RequestException as e:
         print(f"Error fetching playlist: {e}")
@@ -143,102 +172,82 @@ def detect_yellow_region(image, x_start=225, x_end=390):
         return y
     return None
 
-def get_water_level_from_y(y, water_level_mapping):
-    """Map the y-coordinate to the corresponding water level."""
-    for y_coord, level in water_level_mapping.items():
-        if y >= y_coord:
-            return level
-    return None
-
-def draw_level_lines(image, water_level_mapping, y_lowest_yellow):
-    """Draw horizontal lines for each water level."""
-    for y_coord, level in water_level_mapping.items():
-        line_color = (0, 255, 0) if y_coord <= y_lowest_yellow else (0, 0, 255)  # Green for above, red for below
-        cv2.line(image, (0, y_coord), (image.shape[1], y_coord), line_color, 2)
-        cv2.putText(image, f"{level}m", (950, y_coord - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
+def draw_reference_ticks(image, y_detected):
+    """
+    Draw reference level ticks every 0.1 m using the calibrated inverse mapping.
+    Green for ticks above (<= y_detected), red for below.
+    """
+    # Choose a reasonable display range based on calibration
+    lvl_top = max(4.2, LVL_MAX)   # a bit above
+    lvl_bot = min(2.3, LVL_MIN)   # a bit below
+    lvl = lvl_top
+    while lvl >= lvl_bot:
+        y = int(level_to_pixel(lvl))
+        color = (0, 255, 0) if y <= (y_detected or 10**9) else (0, 0, 255)
+        cv2.line(image, (0, y), (image.shape[1], y), color, 1)
+        cv2.putText(image, f"{lvl:.1f}m", (image.shape[1]-150, max(15, y-5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        lvl -= 0.1
 
 def capture_last_frame_from_video(video_url):
     """Capture the last frame from the video segment with robust error handling."""
-    # Set up video capture with specific backend and parameters to handle H.264 issues
     cap = cv2.VideoCapture(video_url)
-    
-    # Configure video capture to handle H.264 issues better
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
-    # cap.set(cv2.CAP_PROP_FPS, 30)  # Set expected FPS
-    
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
     if not cap.isOpened():
         print(f"Failed to open video: {video_url}")
         return None
-    
-    # Get and print video properties
+
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps if fps > 0 else 0
-    
-    aspect_ratio = width / height if height > 0 else 0
-    
-    # Get additional video properties
     fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
     codec = "".join([chr((fourcc >> 8 * i) & 0xFF) for i in range(4)])
-    
-    print(f"Video Properties:")
+
+    print("Video Properties:")
     print(f"  Size: {width}x{height} pixels")
-    print(f"  Aspect Ratio: {aspect_ratio:.2f} ({width}:{height})")
     print(f"  Framerate: {fps:.2f} FPS")
     print(f"  Total Frames: {total_frames}")
     print(f"  Duration: {duration:.2f} seconds")
-    print(f"  Codec: {codec} (FOURCC: {fourcc})")
+    print(f"  Codec: {codec}")
     print(f"  URL: {video_url}")
     print("-" * 50)
-    
-    # Try multiple approaches to get a valid frame
+
     frame = None
-    
-    # Method 1: Try to get the last frame if frame count is available
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames > 0:
-        # Try the last frame first
-        cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total_frames - 1))
         ret, frame = cap.read()
         if ret and frame is not None:
-            print(f"✅ Successfully captured frame: {frame.shape[1]}x{frame.shape[0]} pixels")
             cap.release()
             return frame
-        
-        # If last frame fails, try a few frames before the end
         for offset in [2, 5, 10]:
             if total_frames > offset:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - offset)
                 ret, frame = cap.read()
                 if ret and frame is not None:
-                    print(f"✅ Successfully captured frame (offset {offset}): {frame.shape[1]}x{frame.shape[0]} pixels")
                     cap.release()
                     return frame
-    
-    # Method 2: Try reading from the beginning and skip frames
+
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for i in range(10):  # Try up to 10 frames
+    for _ in range(10):
         ret, frame = cap.read()
         if ret and frame is not None:
-            # Skip a few frames to get a more stable one
-            for _ in range(3):
+            for __ in range(3):
                 cap.read()
             ret, frame = cap.read()
             if ret and frame is not None:
-                print(f"✅ Successfully captured frame (method 2, attempt {i+1}): {frame.shape[1]}x{frame.shape[0]} pixels")
                 cap.release()
                 return frame
-    
-    # Method 3: Try reading any available frame
+
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     ret, frame = cap.read()
     if ret and frame is not None:
-        print(f"✅ Successfully captured frame (method 3): {frame.shape[1]}x{frame.shape[0]} pixels")
         cap.release()
         return frame
-    
+
     print(f"Failed to capture any valid frame from video segment: {video_url}")
     cap.release()
     return None
@@ -248,73 +257,34 @@ def save_image(image, prefix="", postfix=""):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     image_filename = f"{prefix}_{timestamp}{postfix}.jpg"
     save_path = os.path.join(save_directory, image_filename)
-
     cv2.imwrite(save_path, image)
-    return image_filename  # Return only the filename for easier URL construction
+    return image_filename
 
 def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
     """Generate an image that shows only the water level line matching the detected level."""
-    # Create a blank image with the same dimensions as the original
     water_level_image = original_image.copy()
-
-    if water_level is not None:  # Ensure water_level is valid
-        # Determine the exact y-coordinate for the interpolated water level
-        y_coords = sorted(water_level_mapping.keys())  # Ensure we have the y-coordinates sorted
-        y_coord_for_water_level = None
-
-        for i in range(len(y_coords) - 1):
-            if water_level_mapping[y_coords[i]] >= water_level > water_level_mapping[y_coords[i + 1]]:
-                # Linear interpolation for exact position
-                lower_y_coord = y_coords[i]
-                upper_y_coord = y_coords[i + 1]
-                lower_level = water_level_mapping[lower_y_coord]
-                upper_level = water_level_mapping[upper_y_coord]
-
-                # Calculate exact y-coordinate for the water level
-                y_coord_for_water_level = lower_y_coord + (upper_y_coord - lower_y_coord) * (water_level - lower_level) / (upper_level - lower_level)
-                break
-
-        # Draw the line at the calculated y-coordinate
-        if y_coord_for_water_level is not None:
-            line_color = (0, 255, 0)  # Green for the matching level
-            cv2.line(water_level_image, (0, int(y_coord_for_water_level)), (water_level_image.shape[1], int(y_coord_for_water_level)), line_color, 2)
-            cv2.putText(water_level_image, f"{water_level:.2f}m", (950, int(y_coord_for_water_level) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
-
+    if water_level is not None:
+        y = int(level_to_pixel(water_level))
+        line_color = (0, 255, 0)
+        cv2.line(water_level_image, (0, y), (water_level_image.shape[1], y), line_color, 2)
+        cv2.putText(water_level_image, f"{water_level:.2f}m",
+                    (water_level_image.shape[1]-200, max(15, y-5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
     return water_level_image
-
-def get_interpolated_water_level(y, water_level_mapping):
-    """Map the y-coordinate to the corresponding water level using interpolation."""
-    # Sort the water level mapping by y-coordinates
-    y_coords = sorted(water_level_mapping.keys())
-    # Check if the y-coordinate is below the lowest or above the highest
-    if y >= y_coords[0]:
-        for i in range(len(y_coords) - 1):
-            if y_coords[i + 1] >= y > y_coords[i]:  # Found the interval
-                # Interpolate between the two levels
-                level_low = water_level_mapping[y_coords[i]]
-                level_high = water_level_mapping[y_coords[i + 1]]
-
-                # Calculate exact level using linear interpolation
-                interpolated_level = level_low + (level_high - level_low) * (y - y_coords[i]) / (y_coords[i + 1] - y_coords[i])
-                return interpolated_level
-    return None
 
 @app.route('/status', methods=['GET'])
 @cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
 def get_status():
     """Endpoint to get the water level and return image URLs."""
-    global previous_water_level  # Declare as global to modify it
-    
-    # Try to get video segments with fallback options
+    global previous_water_level
+
     video_segments = get_video_segments()
-    
     if not video_segments:
         return jsonify({"error": "Failed to retrieve video segments from HLS playlist."}), 500
-    
+
     original_frame = None
     used_video_url = None
-    
-    # Try each video segment until we get a valid frame
+
     for video_url in reversed(video_segments):  # Try most recent first
         print(f"Trying video URL: {video_url}")
         original_frame = capture_last_frame_from_video(video_url)
@@ -324,56 +294,53 @@ def get_status():
             break
         else:
             print(f"Failed to capture frame from: {video_url}")
-    
-    if original_frame is not None:
-        y_lowest_yellow = detect_yellow_region(original_frame)
 
-        # If the yellow region is not detected, use the previous water level
-        if y_lowest_yellow is None:
-            water_level = previous_water_level  # Fallback to previous level
-            print("Yellow region not detected, using previous water level:", water_level)
-            
-            # Still save the original image even if no yellow region detected
-            original_image_filename = save_image(original_frame, "water_level_image", "_original")
-            
-            base_url = request.host_url
-            unix_timestamp = int(datetime.now().timestamp())
-
-            return jsonify({
-                "water_level": water_level,
-                "original_image_url": f"{base_url}images/{original_image_filename}",
-                "processed_image_url": None,
-                "water_level_line_image_url": None,
-                "timestamp": unix_timestamp,
-                "note": "Yellow region not detected, using previous water level"
-            })
-        else:
-            # Detect water level from the image
-            water_level = get_interpolated_water_level(y_lowest_yellow, water_level_mapping)
-            previous_water_level = water_level  # Update the previous water level with the new one
-
-            processed_frame = original_frame.copy()
-            draw_level_lines(processed_frame, water_level_mapping, y_lowest_yellow)
-
-            processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
-            original_image_filename = save_image(original_frame, "water_level_image", "_original")
-
-            # Generate the water level line image with the detected water level
-            water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
-            water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
-
-            base_url = request.host_url
-            unix_timestamp = int(datetime.now().timestamp())
-
-            return jsonify({
-                "water_level": water_level,
-                "original_image_url": f"{base_url}images/{original_image_filename}",
-                "processed_image_url": f"{base_url}images/{processed_image_filename}",
-                "water_level_line_image_url": f"{base_url}images/{water_level_line_image_filename}",
-                "timestamp": unix_timestamp
-            })
-    else:
+    if original_frame is None:
         return jsonify({"error": "Failed to capture frame from any video segment."}), 500
+
+    y_lowest_yellow = detect_yellow_region(original_frame)
+
+    if y_lowest_yellow is None:
+        water_level = previous_water_level
+        print("Yellow region not detected, using previous water level:", water_level)
+
+        original_image_filename = save_image(original_frame, "water_level_image", "_original")
+        base_ = request.host_url
+        unix_timestamp = int(datetime.now().timestamp())
+
+        return jsonify({
+            "water_level": water_level,
+            "original_image_url": f"{base_}images/{original_image_filename}",
+            "processed_image_url": None,
+            "water_level_line_image_url": None,
+            "timestamp": unix_timestamp,
+            "note": "Yellow region not detected, using previous water level"
+        })
+
+    # Compute level using calibrated mapping
+    water_level = float(pixel_to_level(float(y_lowest_yellow)))
+    previous_water_level = water_level
+
+    processed_frame = original_frame.copy()
+    # Draw reference ticks for context
+    draw_reference_ticks(processed_frame, y_lowest_yellow)
+
+    processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
+    original_image_filename = save_image(original_frame, "water_level_image", "_original")
+    water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
+    water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
+
+    base_ = request.host_url
+    unix_timestamp = int(datetime.now().timestamp())
+
+    return jsonify({
+        "water_level": water_level,
+        "original_image_url": f"{base_}images/{original_image_filename}",
+        "processed_image_url": f"{base_}images/{processed_image_filename}",
+        "water_level_line_image_url": f"{base_}images/{water_level_line_image_filename}",
+        "timestamp": unix_timestamp,
+        "calibration_points": CAL_POINTS
+    })
 
 @app.route('/images/<filename>', methods=['GET'])
 def serve_image(filename):
