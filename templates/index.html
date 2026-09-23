@@ -1,179 +1,1089 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Water Level Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; color: #333; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .container { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1400px; margin: 0 auto; }
-        .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; min-width: 300px; }
-        .current-status { text-align: center; }
-        .level-text { font-size: 48px; font-weight: bold; color: #007bff; margin: 10px 0; }
-        .level-time { color: #6c757d; font-size: 14px; }
-        .img-container { width: 100%; max-height: 400px; overflow: hidden; border-radius: 8px; margin-top: 15px; background: #000; display: flex; justify-content: center; align-items: center; }
-        .img-container img { max-width: 100%; max-height: 400px; object-fit: contain; }
-        .chart-container { position: relative; height: 400px; width: 100%; }
-        .btn { display: inline-block; padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 10px; }
-        .btn:hover { background: #218838; }
-        .footer { text-align: center; margin-top: 40px; color: #6c757d; font-size: 14px; }
-        
-        .history-thumbnails { display: flex; gap: 10px; overflow-x: auto; margin-top: 20px; padding-bottom: 10px; }
-        .thumbnail { flex: 0 0 100px; cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
-        .thumbnail:hover, .thumbnail.active { border-color: #007bff; }
-        .thumbnail img { width: 100%; height: 60px; object-fit: cover; display: block; }
-        .thumbnail-time { text-align: center; font-size: 11px; padding: 2px; background: #eee; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pathumthani Water Level</title>
+<meta name="description" content="Real-time water level monitoring for the Pathumthani river gauge.">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z' fill='%232a78d6'/%3E%3C/svg%3E">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root {
+        color-scheme: light;
+        --plane: #f9f9f7;
+        --surface: #fcfcfb;
+        --ink: #0b0b0b;
+        --ink-2: #52514e;
+        --ink-muted: #898781;
+        --hairline: rgba(11, 11, 11, .10);
+        --hairline-strong: rgba(11, 11, 11, .16);
+        --grid: #e1e0d9;
+        --series: #2a78d6;
+        --track: #cde2fb;
+        --rise: #b45309;
+        --fall: #006300;
+        --steady: #52514e;
+        --wash: rgba(11, 11, 11, .04);
+        --r-lg: 16px;
+        --r-md: 10px;
+        --r-sm: 7px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            color-scheme: dark;
+            --plane: #0d0d0d;
+            --surface: #1a1a19;
+            --ink: #ffffff;
+            --ink-2: #c3c2b7;
+            --ink-muted: #898781;
+            --hairline: rgba(255, 255, 255, .10);
+            --hairline-strong: rgba(255, 255, 255, .18);
+            --grid: #2c2c2a;
+            --series: #3987e5;
+            --track: #0d366b;
+            --rise: #ec835a;
+            --fall: #0ca30c;
+            --steady: #c3c2b7;
+            --wash: rgba(255, 255, 255, .05);
+        }
+    }
+
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --plane: #0d0d0d;
+        --surface: #1a1a19;
+        --ink: #ffffff;
+        --ink-2: #c3c2b7;
+        --ink-muted: #898781;
+        --hairline: rgba(255, 255, 255, .10);
+        --hairline-strong: rgba(255, 255, 255, .18);
+        --grid: #2c2c2a;
+        --series: #3987e5;
+        --track: #0d366b;
+        --rise: #ec835a;
+        --fall: #0ca30c;
+        --steady: #c3c2b7;
+        --wash: rgba(255, 255, 255, .05);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+        margin: 0;
+        background: var(--plane);
+        color: var(--ink);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 15px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    :focus-visible {
+        outline: 2px solid var(--series);
+        outline-offset: 2px;
+        border-radius: 4px;
+    }
+
+    /* ---------- top bar ---------- */
+
+    .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 24px;
+        background: color-mix(in srgb, var(--plane) 88%, transparent);
+        backdrop-filter: saturate(180%) blur(12px);
+        border-bottom: 1px solid var(--hairline);
+    }
+
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand svg { width: 20px; height: 20px; flex: none; color: var(--series); }
+    .brand-name {
+        font-size: 14.5px;
+        font-weight: 600;
+        letter-spacing: -.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .brand-sub { font-size: 12.5px; color: var(--ink-muted); white-space: nowrap; }
+    @media (max-width: 640px) { .brand-sub { display: none; } }
+
+    .topbar-right { display: flex; align-items: center; gap: 8px; flex: none; }
+
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 11px 5px 9px;
+        border: 1px solid var(--hairline);
+        border-radius: 999px;
+        font-size: 12.5px;
+        color: var(--ink-2);
+        white-space: nowrap;
+    }
+    .status-dot {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: var(--fall); flex: none;
+        position: relative;
+    }
+    .status-dot::after {
+        content: "";
+        position: absolute; inset: -3px;
+        border-radius: 50%;
+        border: 1px solid var(--fall);
+        opacity: .45;
+        animation: halo 2.4s ease-out infinite;
+    }
+    .status-pill[data-state="offline"] .status-dot { background: var(--rise); }
+    .status-pill[data-state="offline"] .status-dot::after { animation: none; border-color: var(--rise); }
+    @keyframes halo {
+        0%   { transform: scale(.6); opacity: .6; }
+        70%  { transform: scale(1.5); opacity: 0; }
+        100% { transform: scale(1.5); opacity: 0; }
+    }
+
+    .icon-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 32px; height: 32px;
+        border: 1px solid var(--hairline);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--ink-2);
+        cursor: pointer;
+        transition: background .15s ease, color .15s ease;
+    }
+    .icon-btn:hover { background: var(--wash); color: var(--ink); }
+    .icon-btn svg { width: 15px; height: 15px; }
+    .theme-moon { display: none; }
+
+    /* ---------- layout ---------- */
+
+    .page { max-width: 1240px; margin: 0 auto; padding: 24px 24px 56px; }
+    @media (max-width: 640px) { .page { padding: 18px 16px 40px; } }
+
+    .notice {
+        display: none;
+        align-items: flex-start;
+        gap: 9px;
+        margin-bottom: 18px;
+        padding: 11px 14px;
+        border: 1px solid color-mix(in srgb, var(--rise) 35%, transparent);
+        background: color-mix(in srgb, var(--rise) 8%, transparent);
+        border-radius: var(--r-md);
+        font-size: 13.5px;
+        color: var(--ink);
+    }
+    .notice.is-shown { display: flex; }
+    .notice svg { width: 16px; height: 16px; flex: none; color: var(--rise); margin-top: 2px; }
+
+    .now-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 30px;
+        padding: 26px 28px;
+    }
+    .now-cam {
+        border-left: 1px solid var(--hairline);
+        padding-left: 30px;
+        min-width: 0;
+    }
+    @media (max-width: 900px) {
+        .now-panel { grid-template-columns: 1fr; gap: 24px; padding: 20px; }
+        .now-cam { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; padding-top: 22px; }
+    }
+
+    .card {
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-lg);
+        padding: 22px;
+    }
+    @media (max-width: 640px) { .card { padding: 18px; } }
+
+    .card-eyebrow {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12.5px;
+        color: var(--ink-muted);
+        margin-bottom: 4px;
+    }
+
+    /* ---------- hero ---------- */
+
+    .now-main { display: flex; flex-direction: column; min-width: 0; }
+    .now-main-body { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+    .hero-figure {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin: 6px 0 2px;
+        font-weight: 600;
+        letter-spacing: -.035em;
+        line-height: 1;
+        font-size: clamp(64px, 12vw, 96px);
+    }
+    .hero-unit {
+        font-size: .3em;
+        font-weight: 500;
+        letter-spacing: -.01em;
+        color: var(--ink-2);
+    }
+
+    .delta {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        align-self: flex-start;
+        padding: 5px 11px;
+        border-radius: 999px;
+        font-size: 13px;
+        background: var(--wash);
+        color: var(--ink-2);
+    }
+    .delta-arrow { font-size: 11px; line-height: 1; color: var(--steady); }
+    .delta strong { color: var(--ink); font-weight: 600; }
+    .delta[data-dir="up"] { background: color-mix(in srgb, var(--rise) 11%, transparent); }
+    .delta[data-dir="up"] .delta-arrow { color: var(--rise); }
+    .delta[data-dir="down"] { background: color-mix(in srgb, var(--fall) 11%, transparent); }
+    .delta[data-dir="down"] .delta-arrow { color: var(--fall); }
+
+    .meter { margin-top: 34px; }
+    .meter-track {
+        height: 8px;
+        border-radius: 999px;
+        background: var(--track);
+        overflow: hidden;
+    }
+    .meter-fill {
+        height: 100%;
+        width: 0;
+        border-radius: 999px;
+        background: var(--series);
+        transition: width .7s cubic-bezier(.22, 1, .36, 1);
+    }
+    .meter-scale {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--ink-muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------- camera ---------- */
+
+    .frame {
+        position: relative;
+        width: 100%;
+        max-width: 480px;
+        margin: 0 auto;
+        aspect-ratio: 4 / 3;
+        border-radius: var(--r-md);
+        overflow: hidden;
+        background: var(--wash);
+        border: 1px solid var(--hairline);
+    }
+    .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .frame img:not([src]) { visibility: hidden; }
+
+    .skeleton {
+        position: absolute; inset: 0;
+        background: linear-gradient(100deg, var(--wash) 20%, color-mix(in srgb, var(--ink) 7%, transparent) 45%, var(--wash) 70%);
+        background-size: 300% 100%;
+        animation: sweep 1.5s ease-in-out infinite;
+    }
+    @keyframes sweep { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+
+    .strip {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: thin;
+        -webkit-overflow-scrolling: touch;
+    }
+    .shot {
+        flex: 0 0 76px;
+        padding: 0;
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        overflow: hidden;
+        background: var(--surface);
+        cursor: pointer;
+        transition: border-color .15s ease, transform .15s ease;
+    }
+    .shot:hover { transform: translateY(-2px); border-color: var(--hairline-strong); }
+    .shot[aria-pressed="true"] { border-color: var(--series); box-shadow: 0 0 0 1px var(--series); }
+    .shot img { width: 100%; height: 44px; object-fit: cover; display: block; }
+    .shot span {
+        display: block;
+        padding: 3px 2px;
+        font-size: 11px;
+        color: var(--ink-muted);
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------- trend section ---------- */
+
+    .section-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin: 34px 0 14px;
+    }
+    .section-head h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+    .section-head p { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-muted); }
+
+    .segmented {
+        display: inline-flex;
+        padding: 3px;
+        gap: 2px;
+        background: var(--wash);
+        border-radius: 999px;
+    }
+    .segmented button {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--ink-2);
+        font: inherit;
+        font-size: 13px;
+        padding: 5px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background .15s ease, color .15s ease;
+    }
+    .segmented button:hover { color: var(--ink); }
+    .segmented button[aria-pressed="true"] {
+        background: var(--surface);
+        color: var(--ink);
+        font-weight: 600;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+    }
+
+    .plot { position: relative; height: 340px; }
+    @media (max-width: 640px) { .plot { height: 260px; } }
+    .plot canvas { transition: opacity .2s ease; }
+    .is-stale .plot canvas { opacity: .45; }
+
+    .kpis {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px 20px;
+        margin-top: 20px;
+        padding-top: 18px;
+        border-top: 1px solid var(--hairline);
+    }
+    @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); gap: 16px 20px; } }
+    .kpi-label { font-size: 12.5px; color: var(--ink-muted); }
+    .kpi-value { font-size: 20px; font-weight: 600; letter-spacing: -.02em; margin-top: 1px; }
+    .kpi-value small { font-size: 12.5px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+
+    details.table-view { margin-top: 18px; border-top: 1px solid var(--hairline); padding-top: 14px; }
+    details.table-view summary {
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--ink-2);
+        list-style: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    details.table-view summary::-webkit-details-marker { display: none; }
+    details.table-view summary::before {
+        content: "";
+        width: 0; height: 0;
+        border-left: 4px solid currentColor;
+        border-top: 3.5px solid transparent;
+        border-bottom: 3.5px solid transparent;
+        transition: transform .15s ease;
+    }
+    details.table-view[open] summary::before { transform: rotate(90deg); }
+    .table-scroll { max-height: 280px; overflow-y: auto; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    thead th {
+        position: sticky; top: 0;
+        background: var(--surface);
+        text-align: left;
+        font-weight: 600;
+        color: var(--ink-2);
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--hairline);
+        white-space: nowrap;
+    }
+    tbody td { padding: 7px 10px; border-bottom: 1px solid var(--hairline); color: var(--ink-2); }
+    tbody td:first-child { color: var(--ink); }
+    tbody tr:last-child td { border-bottom: 0; }
+
+    .empty {
+        display: none;
+        position: absolute; inset: 0;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        text-align: center;
+        color: var(--ink-muted);
+        font-size: 13.5px;
+    }
+    .empty.is-shown { display: flex; }
+
+    .foot {
+        margin-top: 30px;
+        padding-top: 18px;
+        border-top: 1px solid var(--hairline);
+        font-size: 12.5px;
+        color: var(--ink-muted);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .foot a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid var(--hairline-strong); }
+    .foot a:hover { color: var(--ink); }
+
+    @media (prefers-reduced-motion: reduce) {
+        *, *::after { animation: none !important; transition: none !important; }
+    }
+</style>
 </head>
 <body>
 
-<div class="header">
-    <h1>Pathumthani Water Level</h1>
-    <p>Real-time AI monitoring dashboard</p>
-</div>
+<header class="topbar">
+    <div class="brand">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z"/>
+        </svg>
+        <span class="brand-name">Pathumthani Water Level</span>
+        <span class="brand-sub">· River gauge monitor</span>
+    </div>
+    <div class="topbar-right">
+        <span class="status-pill" id="statusPill" data-state="loading">
+            <span class="status-dot"></span>
+            <span id="statusText">Connecting</span>
+        </span>
+        <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">
+            <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>
+            </svg>
+            <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+            </svg>
+        </button>
+    </div>
+</header>
 
-<div class="container">
-    <div class="card" style="flex: 0 0 400px;">
-        <h3>Current Status</h3>
-        <div class="current-status">
-            <div class="level-text" id="currentLevel">-- m</div>
-            <div class="level-time" id="currentTime">Loading...</div>
-            <a href="/calibrate" class="btn" style="background:#6c757d; font-size: 12px; padding: 6px 12px;">Calibration Settings</a>
+<main class="page">
+
+    <div class="notice" id="notice" role="status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/>
+        </svg>
+        <span id="noticeText"></span>
+    </div>
+
+    <section class="card now-panel" aria-labelledby="heroLabel">
+        <div class="now-main">
+            <div class="card-eyebrow">
+                <span id="heroLabel">Current water level</span>
+                <span id="heroTime"></span>
+            </div>
+
+            <div class="now-main-body">
+            <div class="hero-figure" aria-live="polite">
+                <span id="heroValue">—</span><span class="hero-unit">m</span>
+            </div>
+
+            <span class="delta" id="delta" data-dir="flat">
+                <span class="delta-arrow" id="deltaArrow">—</span>
+                <span id="deltaText">Waiting for data</span>
+            </span>
+
+            <div class="meter">
+                <div class="meter-track">
+                    <div class="meter-fill" id="meterFill"></div>
+                </div>
+                <div class="meter-scale">
+                    <span id="meterMin">—</span>
+                    <span>Calibrated gauge range</span>
+                    <span id="meterMax">—</span>
+                </div>
+            </div>
+            </div>
         </div>
-        
-        <div class="img-container">
-            <img id="currentImage" src="" alt="Water Level Camera" style="display: none;">
+
+        <div class="now-cam">
+            <div class="card-eyebrow">
+                <span id="camLabel">Gauge camera</span>
+                <span id="camCaption"></span>
+            </div>
+            <div class="frame">
+                <div class="skeleton" id="skeleton"></div>
+                <img id="frameImg" alt="Camera view of the river gauge">
+            </div>
+            <div class="strip" id="strip"></div>
         </div>
-        
-        <h4 style="margin-top: 20px;">Recent Captures</h4>
-        <div class="history-thumbnails" id="thumbnailContainer">
-            <!-- Thumbnails injected here -->
+    </section>
+
+    <div class="section-head">
+        <div>
+            <h2>Water level trend</h2>
+            <p id="trendSub">Readings captured every 5 minutes</p>
+        </div>
+        <div class="segmented" id="rangeControl" role="group" aria-label="Time range">
+            <button type="button" data-hours="6" aria-pressed="false">6h</button>
+            <button type="button" data-hours="12" aria-pressed="false">12h</button>
+            <button type="button" data-hours="24" aria-pressed="true">24h</button>
         </div>
     </div>
-    
-    <div class="card" style="flex: 2;">
-        <h3>Water Level History (Last 24 Hours)</h3>
-        <div class="chart-container">
-            <canvas id="historyChart"></canvas>
-        </div>
-    </div>
-</div>
 
-<div class="footer">
-    Data is automatically collected every 5 minutes.
-</div>
+    <section class="card" id="trendCard">
+        <div class="plot">
+            <canvas id="chart"></canvas>
+            <div class="empty" id="empty">
+                <strong>No readings yet</strong>
+                <span>The first capture appears within a few minutes of startup.</span>
+            </div>
+        </div>
+
+        <div class="kpis">
+            <div>
+                <div class="kpi-label">High</div>
+                <div class="kpi-value"><span id="kpiHigh">—</span><small>m</small></div>
+            </div>
+            <div>
+                <div class="kpi-label">Low</div>
+                <div class="kpi-value"><span id="kpiLow">—</span><small>m</small></div>
+            </div>
+            <div>
+                <div class="kpi-label">Average</div>
+                <div class="kpi-value"><span id="kpiAvg">—</span><small>m</small></div>
+            </div>
+            <div>
+                <div class="kpi-label">Change over range</div>
+                <div class="kpi-value"><span id="kpiChange">—</span><small>m</small></div>
+            </div>
+        </div>
+
+        <details class="table-view">
+            <summary>View readings as a table</summary>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr><th scope="col">Time</th><th scope="col">Level (m)</th><th scope="col">Change (m)</th></tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+
+    <div class="foot">
+        <span>Levels are derived from the live gauge camera by computer vision.</span>
+        <span><a href="/status" target="_blank" rel="noopener">API status</a></span>
+    </div>
+</main>
 
 <script>
-    let chart;
-    
-    function formatTime(timestamp) {
-        return new Date(timestamp * 1000).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+(function () {
+    "use strict";
+
+    var REFRESH_MS = 300000;
+    var state = {
+        history: [],
+        rangeHours: 24,
+        gauge: null,
+        selected: null,
+        chart: null,
+        loaded: false
+    };
+
+    var $ = function (id) { return document.getElementById(id); };
+
+    /* ---------- theme ---------- */
+
+    var stored = null;
+    try { stored = localStorage.getItem("wl-theme"); } catch (e) { /* private mode */ }
+    if (stored === "dark" || stored === "light") {
+        document.documentElement.setAttribute("data-theme", stored);
     }
-    
-    function setMainDisplay(level, timestamp, imageUrl) {
-        document.getElementById('currentLevel').innerText = level ? level.toFixed(2) + ' m' : 'N/A';
-        document.getElementById('currentTime').innerText = "Last updated: " + new Date(timestamp * 1000).toLocaleString('th-TH');
-        const img = document.getElementById('currentImage');
-        if (imageUrl) {
-            img.src = imageUrl;
-            img.style.display = 'block';
-        }
+    syncThemeIcon();
+
+    $("themeBtn").addEventListener("click", function () {
+        var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        var current = document.documentElement.getAttribute("data-theme") || (dark ? "dark" : "light");
+        var next = current === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        try { localStorage.setItem("wl-theme", next); } catch (e) { /* ignore */ }
+        syncThemeIcon();
+        if (state.chart) { applyChartTheme(state.chart); state.chart.update("none"); }
+    });
+
+    function syncThemeIcon() {
+        var dark = isDark();
+        $("themeBtn").querySelector(".theme-sun").style.display = dark ? "none" : "block";
+        $("themeBtn").querySelector(".theme-moon").style.display = dark ? "block" : "none";
     }
 
-    async function loadData() {
-        try {
-            // Fetch history
-            const histRes = await fetch('/api/history');
-            const history = await histRes.json();
-            
-            if (history.length > 0) {
-                const latest = history[history.length - 1];
-                setMainDisplay(latest.level, latest.timestamp, '/images/' + latest.image);
-                
-                // Draw chart
-                drawChart(history);
-                
-                // Draw thumbnails (last 10)
-                drawThumbnails(history.slice(-10).reverse());
-            } else {
-                document.getElementById('currentTime').innerText = "No data yet. Waiting for first capture...";
+    function isDark() {
+        var attr = document.documentElement.getAttribute("data-theme");
+        if (attr) return attr === "dark";
+        return matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+
+    function token(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    /* ---------- formatting ---------- */
+
+    function clockTime(ts) {
+        return new Date(ts * 1000).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function fullTime(ts) {
+        return new Date(ts * 1000).toLocaleString("th-TH", {
+            day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
+        });
+    }
+
+    function agoText(ts) {
+        var secs = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+        if (secs < 90) return "just now";
+        var mins = Math.round(secs / 60);
+        if (mins < 60) return mins + " min ago";
+        var hrs = Math.round(mins / 60);
+        return hrs === 1 ? "1 hour ago" : hrs + " hours ago";
+    }
+
+    function signed(n) {
+        return (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n).toFixed(2);
+    }
+
+    /* ---------- data ---------- */
+
+    function slice() {
+        if (!state.history.length) return [];
+        var cutoff = state.history[state.history.length - 1].timestamp - state.rangeHours * 3600;
+        return state.history.filter(function (r) { return r.timestamp >= cutoff; });
+    }
+
+    function load() {
+        if (state.loaded) $("trendCard").classList.add("is-stale");
+
+        var jobs = [fetchJson("/api/history")];
+        if (!state.gauge) jobs.push(fetchJson("/api/calibration"));
+
+        return Promise.all(jobs).then(function (res) {
+            var history = Array.isArray(res[0]) ? res[0] : [];
+            history = history.filter(function (r) {
+                return r && typeof r.timestamp === "number" && typeof r.level === "number";
+            });
+
+            if (res[1] && Array.isArray(res[1].points) && res[1].points.length) {
+                var levels = res[1].points.map(function (p) { return p[1]; });
+                state.gauge = { min: Math.min.apply(null, levels), max: Math.max.apply(null, levels) };
             }
-        } catch (e) {
-            console.error(e);
-            document.getElementById('currentTime').innerText = "Error loading data.";
+
+            state.history = history;
+            if (state.selected !== null && !history.some(function (r) { return r.timestamp === state.selected; })) {
+                state.selected = null;
+            }
+            state.loaded = true;
+            setStatus(true);
+            render();
+        }).catch(function (err) {
+            console.error(err);
+            setStatus(false);
+        }).then(function () {
+            $("trendCard").classList.remove("is-stale");
+        });
+    }
+
+    function fetchJson(url) {
+        return fetch(url, { cache: "no-store" }).then(function (r) {
+            if (!r.ok) throw new Error(url + " responded " + r.status);
+            return r.json();
+        });
+    }
+
+    function setStatus(ok) {
+        var pill = $("statusPill");
+        pill.setAttribute("data-state", ok ? "live" : "offline");
+        $("noticeText").textContent = "Can't reach the monitoring service. Showing the most recent data received.";
+        $("notice").classList.toggle("is-shown", !ok);
+        if (!ok) $("statusText").textContent = "Offline";
+        else refreshAgo();
+    }
+
+    function refreshAgo() {
+        if ($("statusPill").getAttribute("data-state") === "offline") return;
+        var last = state.history[state.history.length - 1];
+        $("statusText").textContent = last ? "Live · " + agoText(last.timestamp) : "Waiting for data";
+    }
+
+    /* ---------- render ---------- */
+
+    function render() {
+        var rows = slice();
+        var latest = state.history[state.history.length - 1] || null;
+
+        renderHero(latest);
+        renderCamera();
+        renderStrip();
+        renderKpis(rows);
+        renderTable(rows);
+        renderChart(rows);
+
+        $("trendSub").textContent = "Last " + state.rangeHours + " hours · readings captured every 5 minutes";
+    }
+
+    function renderHero(latest) {
+        if (!latest) return;
+
+        $("heroValue").textContent = latest.level.toFixed(2);
+        $("heroTime").textContent = fullTime(latest.timestamp);
+
+        var prev = state.history[state.history.length - 2];
+        var delta = $("delta");
+        if (prev) {
+            var d = latest.level - prev.level;
+            var dir = Math.abs(d) < 0.01 ? "flat" : (d > 0 ? "up" : "down");
+            delta.setAttribute("data-dir", dir);
+            $("deltaArrow").textContent = dir === "up" ? "▲" : dir === "down" ? "▼" : "—";
+            $("deltaText").textContent = "";
+            var word = document.createElement("strong");
+            word.textContent = dir === "up" ? "Rising" : dir === "down" ? "Falling" : "Steady";
+            $("deltaText").appendChild(word);
+            $("deltaText").appendChild(document.createTextNode(
+                dir === "flat" ? " over the last 5 minutes" : " " + signed(d) + " m in the last 5 minutes"
+            ));
+        }
+
+        if (state.gauge) {
+            var span = state.gauge.max - state.gauge.min;
+            var pct = span > 0 ? ((latest.level - state.gauge.min) / span) * 100 : 0;
+            $("meterFill").style.width = Math.min(100, Math.max(0, pct)).toFixed(1) + "%";
+            $("meterMin").textContent = state.gauge.min.toFixed(2) + " m";
+            $("meterMax").textContent = state.gauge.max.toFixed(2) + " m";
         }
     }
 
-    function drawChart(history) {
-        const ctx = document.getElementById('historyChart').getContext('2d');
-        
-        const labels = history.map(item => formatTime(item.timestamp));
-        const data = history.map(item => item.level);
-        
-        if (chart) chart.destroy();
-        
-        chart = new Chart(ctx, {
-            type: 'line',
+    function shownShot() {
+        if (state.selected === null) return state.history[state.history.length - 1] || null;
+        for (var i = 0; i < state.history.length; i++) {
+            if (state.history[i].timestamp === state.selected) return state.history[i];
+        }
+        return state.history[state.history.length - 1] || null;
+    }
+
+    function renderCamera() {
+        var shot = shownShot();
+        if (!shot) return;
+
+        var img = $("frameImg");
+        var src = "/images/" + shot.image;
+        if (img.getAttribute("src") !== src) {
+            img.onload = function () { $("skeleton").style.display = "none"; };
+            img.onerror = function () { $("skeleton").style.display = "none"; };
+            img.src = src;
+        }
+
+        var isLatest = shot === state.history[state.history.length - 1];
+        $("camCaption").textContent = (isLatest ? "Latest · " : "") + clockTime(shot.timestamp) + " · " + shot.level.toFixed(2) + " m";
+    }
+
+    function renderStrip() {
+        var strip = $("strip");
+        var recent = state.history.slice(-12).reverse();
+        var shown = shownShot();
+        strip.textContent = "";
+
+        recent.forEach(function (shot) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "shot";
+            btn.setAttribute("aria-pressed", String(shot === shown));
+            btn.title = clockTime(shot.timestamp) + " · " + shot.level.toFixed(2) + " m";
+
+            var img = document.createElement("img");
+            img.src = "/images/" + shot.image;
+            img.alt = "Gauge at " + clockTime(shot.timestamp);
+            img.loading = "lazy";
+
+            var label = document.createElement("span");
+            label.textContent = clockTime(shot.timestamp);
+
+            btn.appendChild(img);
+            btn.appendChild(label);
+            btn.addEventListener("click", function () {
+                var isLatest = shot === state.history[state.history.length - 1];
+                state.selected = isLatest ? null : shot.timestamp;
+                renderCamera();
+                renderStrip();
+            });
+            strip.appendChild(btn);
+        });
+    }
+
+    function renderKpis(rows) {
+        if (!rows.length) return;
+        var levels = rows.map(function (r) { return r.level; });
+        var sum = levels.reduce(function (a, b) { return a + b; }, 0);
+
+        $("kpiHigh").textContent = Math.max.apply(null, levels).toFixed(2);
+        $("kpiLow").textContent = Math.min.apply(null, levels).toFixed(2);
+        $("kpiAvg").textContent = (sum / levels.length).toFixed(2);
+        $("kpiChange").textContent = signed(levels[levels.length - 1] - levels[0]);
+    }
+
+    function renderTable(rows) {
+        var body = $("tableBody");
+        body.textContent = "";
+
+        rows.slice().reverse().forEach(function (row, i, arr) {
+            var prev = arr[i + 1];
+            var tr = document.createElement("tr");
+            [
+                fullTime(row.timestamp),
+                row.level.toFixed(2),
+                prev ? signed(row.level - prev.level) : "—"
+            ].forEach(function (text) {
+                var td = document.createElement("td");
+                td.textContent = text;
+                tr.appendChild(td);
+            });
+            body.appendChild(tr);
+        });
+    }
+
+    /* ---------- chart ---------- */
+
+    var crosshair = {
+        id: "crosshair",
+        afterDatasetsDraw: function (chart) {
+            var active = chart.tooltip && chart.tooltip.getActiveElements ? chart.tooltip.getActiveElements() : [];
+            if (!active.length) return;
+            var ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(active[0].element.x, chart.chartArea.top);
+            ctx.lineTo(active[0].element.x, chart.chartArea.bottom);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = token("--hairline-strong");
+            ctx.stroke();
+            ctx.restore();
+        }
+    };
+
+    var endpoint = {
+        id: "endpoint",
+        afterDatasetsDraw: function (chart) {
+            var pts = chart.getDatasetMeta(0).data;
+            if (!pts.length) return;
+            var last = pts[pts.length - 1];
+            var value = chart.data.datasets[0].data[pts.length - 1];
+            if (value === null || value === undefined) return;
+
+            var ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(last.x, last.y, 6, 0, Math.PI * 2);
+            ctx.fillStyle = token("--surface");
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = token("--series");
+            ctx.fill();
+
+            ctx.font = "600 12px system-ui, -apple-system, sans-serif";
+            ctx.fillStyle = token("--ink");
+            ctx.textAlign = "right";
+            ctx.textBaseline = "bottom";
+            ctx.fillText(value.toFixed(2) + " m", last.x - 9, last.y - 4);
+            ctx.restore();
+        }
+    };
+
+    function applyChartTheme(chart) {
+        var series = token("--series");
+        var ds = chart.data.datasets[0];
+        ds.borderColor = series;
+        ds.backgroundColor = fillFor(chart, series);
+        ds.pointHoverBackgroundColor = series;
+        ds.pointHoverBorderColor = token("--surface");
+
+        chart.options.scales.y.grid.color = token("--grid");
+        chart.options.scales.y.ticks.color = token("--ink-2");
+        chart.options.scales.y.title.color = token("--ink-muted");
+        chart.options.scales.x.ticks.color = token("--ink-2");
+        chart.options.plugins.tooltip.backgroundColor = isDark() ? "#2c2c2a" : "#0b0b0b";
+    }
+
+    function fillFor(chart, series) {
+        var area = chart.chartArea;
+        if (!area) return "transparent";
+        var g = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+        g.addColorStop(0, hexToRgba(series, 0.14));
+        g.addColorStop(1, hexToRgba(series, 0));
+        return g;
+    }
+
+    function hexToRgba(hex, alpha) {
+        var h = hex.replace("#", "");
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        var n = parseInt(h, 16);
+        return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
+    }
+
+    function xTickLimit() {
+        return window.innerWidth < 700 ? 4 : 8;
+    }
+
+    function axisBounds(lo, hi) {
+        var pad = Math.max((hi - lo) * 0.18, 0.05);
+        var min = lo - pad;
+        var max = hi + pad;
+        var steps = [0.05, 0.1, 0.25, 0.5, 1];
+        var step = steps[steps.length - 1];
+        for (var i = 0; i < steps.length; i++) {
+            if ((max - min) / steps[i] <= 6) { step = steps[i]; break; }
+        }
+        return {
+            min: Math.floor(min / step) * step,
+            max: Math.ceil(max / step) * step,
+            step: step
+        };
+    }
+
+    function renderChart(rows) {
+        $("empty").classList.toggle("is-shown", rows.length === 0);
+        if (!rows.length) {
+            if (state.chart) { state.chart.destroy(); state.chart = null; }
+            return;
+        }
+
+        var labels = rows.map(function (r) { return clockTime(r.timestamp); });
+        var data = rows.map(function (r) { return r.level; });
+        var bounds = axisBounds(Math.min.apply(null, data), Math.max.apply(null, data));
+
+        if (state.chart) {
+            state.chart.data.labels = labels;
+            state.chart.data.datasets[0].data = data;
+            state.chart.options.scales.y.min = bounds.min;
+            state.chart.options.scales.y.max = bounds.max;
+            state.chart.options.scales.y.ticks.stepSize = bounds.step;
+            state.chart.options.scales.x.ticks.maxTicksLimit = xTickLimit();
+            applyChartTheme(state.chart);
+            state.chart.update("none");
+            return;
+        }
+
+        var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        state.chart = new Chart($("chart").getContext("2d"), {
+            type: "line",
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Water Level (m)',
+                    label: "Water level",
                     data: data,
-                    borderColor: '#007bff',
-                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
                     borderWidth: 2,
+                    borderCapStyle: "round",
+                    borderJoinStyle: "round",
+                    tension: 0.32,
                     fill: true,
-                    tension: 0.3,
-                    pointRadius: 2
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    pointHoverBorderWidth: 2,
+                    pointHitRadius: 24
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                onResize: function (c) { c.options.scales.x.ticks.maxTicksLimit = xTickLimit(); },
+                animation: reduce ? false : { duration: 420 },
+                layout: { padding: { top: 22, right: 10 } },
+                interaction: { mode: "index", intersect: false },
                 scales: {
                     y: {
-                        title: { display: true, text: 'Level (Meters)' },
-                        // min: 2.0, // optional fixed scale
-                        // max: 4.5
+                        min: bounds.min,
+                        max: bounds.max,
+                        border: { display: false },
+                        grid: { drawTicks: false },
+                        ticks: { padding: 10, stepSize: bounds.step, callback: function (v) { return v.toFixed(2); } },
+                        title: { display: true, text: "Level (m)", font: { size: 11 } }
                     },
                     x: {
-                        ticks: { maxTicksLimit: 12 }
+                        border: { color: token("--grid") },
+                        grid: { display: false },
+                        ticks: {
+                            padding: 6,
+                            maxTicksLimit: xTickLimit(),
+                            autoSkipPadding: 16,
+                            maxRotation: 0,
+                            autoSkip: true
+                        }
                     }
                 },
                 plugins: {
-                    legend: { display: false }
+                    legend: { display: false },
+                    tooltip: {
+                        displayColors: false,
+                        padding: { x: 11, y: 9 },
+                        cornerRadius: 8,
+                        titleFont: { size: 11, weight: "500" },
+                        titleColor: "#c3c2b7",
+                        bodyFont: { size: 14, weight: "600" },
+                        bodyColor: "#ffffff",
+                        callbacks: {
+                            title: function (items) { return items[0].label; },
+                            label: function (item) { return item.parsed.y.toFixed(2) + " m"; }
+                        }
+                    }
                 }
-            }
+            },
+            plugins: [crosshair, endpoint]
         });
+
+        applyChartTheme(state.chart);
+        state.chart.update("none");
     }
 
-    function drawThumbnails(recentHistory) {
-        const container = document.getElementById('thumbnailContainer');
-        container.innerHTML = '';
-        
-        recentHistory.forEach((item, index) => {
-            const div = document.createElement('div');
-            div.className = 'thumbnail' + (index === 0 ? ' active' : '');
-            div.innerHTML = `
-                <img src="/images/${item.image}" alt="time">
-                <div class="thumbnail-time">${formatTime(item.timestamp)}</div>
-            `;
-            div.onclick = () => {
-                // Remove active class from all
-                document.querySelectorAll('.thumbnail').forEach(t => t.classList.remove('active'));
-                div.classList.add('active');
-                setMainDisplay(item.level, item.timestamp, '/images/' + item.image);
-            };
-            container.appendChild(div);
+    /* ---------- controls ---------- */
+
+    $("rangeControl").addEventListener("click", function (e) {
+        var btn = e.target.closest("button[data-hours]");
+        if (!btn) return;
+        state.rangeHours = Number(btn.dataset.hours);
+        Array.prototype.forEach.call(this.querySelectorAll("button"), function (b) {
+            b.setAttribute("aria-pressed", String(b === btn));
         });
-    }
+        render();
+    });
 
-    // Load immediately and refresh every 5 minutes
-    loadData();
-    setInterval(loadData, 300000);
-
+    load();
+    setInterval(load, REFRESH_MS);
+    setInterval(refreshAgo, 30000);
+})();
 </script>
 </body>
 </html>
