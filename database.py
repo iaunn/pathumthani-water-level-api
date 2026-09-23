@@ -5,14 +5,20 @@ from datetime import datetime, timezone
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
 CALIBRATION_ID = "current"
+MARKERS_ID = "current"
+
+# Reference lines are drawn from a fixed palette rather than free colours, so the
+# chart keeps a consistent reading of severity across the whole dashboard.
+MARKER_COLORS = ("yellow", "orange", "red", "grey")
 
 _readings = None
 _calibration = None
+_markers = None
 
 
 def init():
     """Connect and ensure indexes. Raises if unreachable, so a bad deploy fails at boot."""
-    global _readings, _calibration
+    global _readings, _calibration, _markers
 
     uri = os.getenv("MONGODB_URI")
     if not uri:
@@ -27,6 +33,7 @@ def init():
     db = client[os.getenv("MONGODB_DATABASE", "water_level")]
     _readings = db["readings"]
     _calibration = db["calibration"]
+    _markers = db["markers"]
 
     _readings.create_index([("timestamp", DESCENDING)])
 
@@ -109,6 +116,21 @@ def load_calibration_points():
     if not doc:
         return []
     return [tuple(p) for p in doc.get("points", [])]
+
+
+def load_markers():
+    doc = _markers.find_one({"_id": MARKERS_ID})
+    if not doc:
+        return []
+    return doc.get("markers", [])
+
+
+def save_markers(markers):
+    _markers.update_one(
+        {"_id": MARKERS_ID},
+        {"$set": {"markers": markers, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
 
 
 def save_calibration_points(points):

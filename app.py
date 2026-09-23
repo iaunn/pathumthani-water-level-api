@@ -1182,6 +1182,43 @@ def handle_calibration():
         else:
             return jsonify({"error": "Failed to save calibration"}), 500
 
+@app.route('/api/markers', methods=['GET', 'POST'])
+def handle_markers():
+    """Reference lines drawn across the trend chart: warning levels and past floods."""
+    if request.method == 'GET':
+        return jsonify({"markers": database.load_markers()})
+
+    data = request.json or {}
+    if not isinstance(data.get("markers"), list):
+        return jsonify({"error": "markers must be a list"}), 400
+
+    cleaned = []
+    for raw in data["markers"]:
+        if not isinstance(raw, dict):
+            return jsonify({"error": "each marker must be an object"}), 400
+
+        label = str(raw.get("label", "")).strip()
+        if not label:
+            return jsonify({"error": "every marker needs a label"}), 400
+
+        try:
+            level = round(float(raw["level"]), 2)
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": f"marker '{label}' needs a numeric level"}), 400
+
+        color = raw.get("color", "grey")
+        if color not in database.MARKER_COLORS:
+            return jsonify({
+                "error": f"marker '{label}' has an unknown colour; use one of "
+                         + ", ".join(database.MARKER_COLORS)
+            }), 400
+
+        cleaned.append({"label": label[:40], "level": level, "color": color})
+
+    cleaned.sort(key=lambda m: m["level"], reverse=True)
+    database.save_markers(cleaned)
+    return jsonify({"success": True, "markers": cleaned})
+
 @app.route('/api/calibration/frame', methods=['GET'])
 def get_calibration_frame():
     """Fetch the latest video frame, set it as homography reference, and return its URL."""

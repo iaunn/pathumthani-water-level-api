@@ -23,6 +23,14 @@
         .controls { display: flex; gap: 10px; margin-bottom: 20px; }
         .loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); display: flex; justify-content: center; align-items: center; font-size: 20px; font-weight: bold; }
         .instructions { font-size: 14px; color: #666; margin-bottom: 15px; }
+        .divider { margin: 28px 0 18px; border-top: 1px solid #ddd; }
+        h2 { font-size: 17px; margin: 0 0 6px; }
+        .marker-item { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; padding: 8px; background: #f9f9f9; border: 1px solid #eee; border-radius: 4px; }
+        .marker-item input[type=text] { flex: 1; min-width: 0; padding: 5px; }
+        .marker-item input[type=number] { width: 68px; padding: 5px; }
+        .marker-item select { padding: 5px; }
+        .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+        #markerStatus { font-size: 13px; margin-top: 10px; min-height: 18px; }
     </style>
 </head>
 <body>
@@ -54,6 +62,20 @@
         </div>
         
         <button class="btn btn-success" onclick="saveCalibration()">Save Calibration</button>
+
+        <div class="divider"></div>
+
+        <h2>Reference lines</h2>
+        <p class="instructions">
+            Warning levels and past flood marks, drawn across the trend chart on the
+            dashboard. Read them off the markers fixed to the pole.<br>
+            Saved separately &mdash; this does not touch the homography baseline.
+        </p>
+
+        <div id="markerList"></div>
+        <button class="btn" onclick="addMarker()">+ Add line</button>
+        <button class="btn btn-success" onclick="saveMarkers()">Save Reference Lines</button>
+        <div id="markerStatus"></div>
     </div>
 </div>
 
@@ -308,8 +330,104 @@
         loading.style.display = 'none';
     }
 
+    // ---------- reference lines ----------
+
+    var MARKER_SWATCH = { red: "#be123c", orange: "#ea580c", yellow: "#a16207", grey: "#57534e" };
+    var markers = [];
+
+    async function loadMarkers() {
+        try {
+            const res = await fetch("/api/markers");
+            const data = await res.json();
+            markers = Array.isArray(data.markers) ? data.markers : [];
+        } catch (e) {
+            console.error("Failed to load reference lines", e);
+        }
+        renderMarkers();
+    }
+
+    function renderMarkers() {
+        const list = document.getElementById("markerList");
+        list.innerHTML = "";
+
+        markers.forEach((m, i) => {
+            const row = document.createElement("div");
+            row.className = "marker-item";
+
+            const swatch = document.createElement("span");
+            swatch.className = "swatch";
+            swatch.style.background = MARKER_SWATCH[m.color] || MARKER_SWATCH.grey;
+
+            const label = document.createElement("input");
+            label.type = "text";
+            label.value = m.label;
+            label.placeholder = "e.g. ก.ย. 2565";
+            label.oninput = () => { markers[i].label = label.value; };
+
+            const level = document.createElement("input");
+            level.type = "number";
+            level.step = "0.01";
+            level.value = m.level;
+            level.oninput = () => { markers[i].level = parseFloat(level.value); };
+
+            const color = document.createElement("select");
+            ["red", "orange", "yellow", "grey"].forEach(c => {
+                const opt = document.createElement("option");
+                opt.value = c;
+                opt.textContent = c;
+                if (c === m.color) opt.selected = true;
+                color.appendChild(opt);
+            });
+            color.onchange = () => {
+                markers[i].color = color.value;
+                swatch.style.background = MARKER_SWATCH[color.value];
+            };
+
+            const del = document.createElement("button");
+            del.className = "btn btn-danger";
+            del.textContent = "X";
+            del.onclick = () => { markers.splice(i, 1); renderMarkers(); };
+
+            [swatch, label, level, color, del].forEach(el => row.appendChild(el));
+            list.appendChild(row);
+        });
+    }
+
+    function addMarker() {
+        markers.push({ label: "", level: 2.5, color: "yellow" });
+        renderMarkers();
+    }
+
+    async function saveMarkers() {
+        const status = document.getElementById("markerStatus");
+        status.style.color = "#333";
+        status.textContent = "Saving...";
+        try {
+            const res = await fetch("/api/markers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ markers: markers })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                status.style.color = "#dc3545";
+                status.textContent = data.error || "Failed to save.";
+                return;
+            }
+            markers = data.markers;
+            renderMarkers();
+            status.style.color = "#28a745";
+            status.textContent = "Saved " + markers.length + " reference line(s).";
+        } catch (e) {
+            console.error(e);
+            status.style.color = "#dc3545";
+            status.textContent = "Error saving reference lines.";
+        }
+    }
+
     // Initial load
     fetchData();
+    loadMarkers();
 </script>
 
 </body>

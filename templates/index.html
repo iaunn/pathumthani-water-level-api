@@ -438,6 +438,18 @@
         box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
     }
 
+    .head-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .marker-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13px;
+        color: var(--ink-2);
+        cursor: pointer;
+        user-select: none;
+    }
+    .marker-toggle input { accent-color: var(--series); width: 15px; height: 15px; cursor: pointer; }
+
     .custom-range {
         display: none;
         align-items: flex-end;
@@ -652,12 +664,18 @@
             <h2 data-i18n="trendTitle">Water level trend</h2>
             <p id="trendSub">Readings captured every 5 minutes</p>
         </div>
+        <div class="head-controls">
+        <label class="marker-toggle" id="markerToggleWrap">
+            <input type="checkbox" id="markerToggle" checked>
+            <span data-i18n="showMarkers">Flood markers</span>
+        </label>
         <div class="segmented" id="rangeControl" role="group" data-i18n-aria="timeRange" aria-label="Time range">
             <button type="button" data-days="1" aria-pressed="true">24h</button>
             <button type="button" data-days="7" aria-pressed="false">7d</button>
             <button type="button" data-days="30" aria-pressed="false">30d</button>
             <button type="button" data-days="92" aria-pressed="false">3<span data-i18n="monthsShort">mo</span></button>
             <button type="button" data-custom="1" aria-pressed="false" data-i18n="customRange">Custom</button>
+        </div>
         </div>
     </div>
 
@@ -738,10 +756,35 @@
         from: null,       // set only for a custom range
         to: null,
         gauge: null,
+        markers: [],
+        showMarkers: true,
         selected: null,
         chart: null,
         loaded: false
     };
+
+    try {
+        state.showMarkers = localStorage.getItem("wl-markers") !== "off";
+    } catch (e) { /* private mode */ }
+
+    /*
+     * Yellow, orange and red are neighbouring hues by design -- that is what makes
+     * them read as a severity ramp -- so they stay close together under colour
+     * blindness however they are stepped. Identification therefore never rests on
+     * the hue: every line carries its label, and severity also changes the dash
+     * pattern and weight. Each value clears 3:1 against its own surface.
+     */
+    var MARKER_STYLE = {
+        red:    { light: "#9f1239", dark: "#f43f5e", dash: [],     width: 2.5 },
+        orange: { light: "#ea580c", dark: "#fb923c", dash: [9, 5], width: 2 },
+        yellow: { light: "#a16207", dark: "#fde047", dash: [4, 4], width: 2 },
+        grey:   { light: "#57534e", dark: "#a8a29e", dash: [2, 5], width: 1.5 }
+    };
+
+    function markerStyle(color) {
+        var st = MARKER_STYLE[color] || MARKER_STYLE.grey;
+        return { color: isDark() ? st.dark : st.light, dash: st.dash, width: st.width };
+    }
 
     var $ = function (id) { return document.getElementById(id); };
 
@@ -787,6 +830,7 @@
             steady: "Steady",
             deltaMoved: " {d} m in the last 5 minutes",
             deltaSteady: " over the last 5 minutes",
+            showMarkers: "Flood markers",
             monthsShort: "mo",
             customRange: "Custom",
             rangeFrom: "From",
@@ -850,6 +894,7 @@
             steady: "\u0e04\u0e07\u0e17\u0e35\u0e48",
             deltaMoved: " {d} \u0e21. \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             deltaSteady: " \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
+            showMarkers: "\u0e40\u0e2a\u0e49\u0e19\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33",
             monthsShort: "\u0e14.",
             customRange: "\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e40\u0e2d\u0e07",
             rangeFrom: "\u0e15\u0e31\u0e49\u0e07\u0e41\u0e15\u0e48",
@@ -1026,7 +1071,7 @@
             fetchJson("/api/recent"),
             fetchJson("/api/history?from=" + bounds.from + "&to=" + bounds.to)
         ];
-        if (!state.gauge) jobs.push(fetchJson("/api/calibration"));
+        if (!state.gauge) jobs.push(fetchJson("/api/calibration"), fetchJson("/api/markers"));
 
         return Promise.all(jobs).then(function (res) {
             state.recent = (Array.isArray(res[0]) ? res[0] : []).filter(function (r) {
@@ -1041,6 +1086,7 @@
                 var levels = cal.points.map(function (p) { return p[1]; });
                 state.gauge = { min: Math.min.apply(null, levels), max: Math.max.apply(null, levels) };
             }
+            if (res[3] && Array.isArray(res[3].markers)) state.markers = res[3].markers;
 
             if (state.selected !== null && !state.recent.some(function (r) { return r.timestamp === state.selected; })) {
                 state.selected = null;
@@ -1286,6 +1332,66 @@
         }
     };
 
+    var markerLines = {
+        id: "markerLines",
+        beforeDatasetsDraw: function (chart) {
+            if (!state.showMarkers || !state.markers.length) return;
+
+            var ctx = chart.ctx;
+            var area = chart.chartArea;
+            var scale = chart.scales.y;
+            var placed = [];   // label boxes already drawn, to step around
+
+            state.markers.forEach(function (m) {
+                var y = scale.getPixelForValue(m.level);
+                if (y < area.top || y > area.bottom) return;
+
+                var st = markerStyle(m.color);
+                ctx.save();
+                ctx.beginPath();
+                ctx.setLineDash(st.dash);
+                ctx.moveTo(area.left, y);
+                ctx.lineTo(area.right, y);
+                ctx.lineWidth = st.width;
+                ctx.strokeStyle = st.color;
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // The label is what actually identifies the line; colour only reinforces it.
+                var text = m.label + "  " + m.level.toFixed(2) + " " + t("unit");
+                ctx.font = "600 11px system-ui, -apple-system, sans-serif";
+                var w = ctx.measureText(text).width;
+                var boxX = area.left + 6;
+                var boxY = y - 15;
+                if (boxY < area.top) boxY = y + 3;
+
+                // Two marks a few centimetres apart would otherwise print on top of
+                // each other. Step sideways instead of stacking, so each label stays
+                // on its own line.
+                for (var pass = 0; pass < placed.length; pass++) {
+                    var hit = placed.some(function (b) {
+                        return Math.abs(b.y - boxY) < 14 && boxX < b.x + b.w + 8 && boxX + w > b.x - 8;
+                    });
+                    if (!hit) break;
+                    placed.forEach(function (b) {
+                        if (Math.abs(b.y - boxY) < 14) boxX = Math.max(boxX, b.x + b.w + 12);
+                    });
+                }
+                if (boxX + w > area.right) boxX = Math.max(area.left + 6, area.right - w - 4);
+                placed.push({ x: boxX, y: boxY, w: w });
+
+                ctx.fillStyle = token("--surface");
+                ctx.globalAlpha = 0.88;
+                ctx.fillRect(boxX - 4, boxY, w + 8, 14);
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = st.color;
+                ctx.textBaseline = "top";
+                ctx.fillText(text, boxX, boxY + 1);
+                ctx.restore();
+            });
+        }
+    };
+
     var endpoint = {
         id: "endpoint",
         afterDatasetsDraw: function (chart) {
@@ -1351,6 +1457,12 @@
     }
 
     function axisBounds(lo, hi) {
+        if (state.showMarkers) {
+            state.markers.forEach(function (m) {
+                lo = Math.min(lo, m.level);
+                hi = Math.max(hi, m.level);
+            });
+        }
         var pad = Math.max((hi - lo) * 0.18, 0.05);
         var min = lo - pad;
         var max = hi + pad;
@@ -1376,6 +1488,11 @@
         var labels = rows.map(function (r) { return axisLabel(r.timestamp); });
         var data = rows.map(function (r) { return r.level; });
         var bounds = axisBounds(Math.min.apply(null, data), Math.max.apply(null, data));
+
+        if (state.chart && state.chart.__markers !== markerSignature()) {
+            state.chart.destroy();
+            state.chart = null;
+        }
 
         if (state.chart) {
             state.chart.data.labels = labels;
@@ -1456,11 +1573,18 @@
                     }
                 }
             },
-            plugins: [crosshair, endpoint]
+            plugins: [markerLines, crosshair, endpoint]
         });
 
+        state.chart.__markers = markerSignature();
         applyChartTheme(state.chart);
         state.chart.update("none");
+    }
+
+    function markerSignature() {
+        return state.showMarkers
+            ? state.markers.map(function (m) { return m.level + m.color; }).join("|")
+            : "off";
     }
 
     /* ---------- controls ---------- */
@@ -1507,6 +1631,13 @@
         el.textContent = text;
         el.classList.toggle("is-error", !!isError);
     }
+
+    $("markerToggle").checked = state.showMarkers;
+    $("markerToggle").addEventListener("change", function () {
+        state.showMarkers = this.checked;
+        try { localStorage.setItem("wl-markers", this.checked ? "on" : "off"); } catch (e) { /* ignore */ }
+        renderChart(state.series);
+    });
 
     $("rangeApply").addEventListener("click", function () {
         var from = Date.parse($("rangeFrom").value + "T00:00:00") / 1000;
