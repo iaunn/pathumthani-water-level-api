@@ -11,6 +11,10 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import database
 
 CALIBRATION_FILE = "calibration.json"

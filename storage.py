@@ -9,11 +9,10 @@ from botocore.exceptions import ClientError
 CAPTURE_PREFIX = "captures/"
 REFERENCE_KEY = "reference/reference_frame.jpg"
 
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", 85))
-
 _bucket = None
 _public_base = None
 _client = None
+_jpeg_quality = 85
 
 
 def _require(name):
@@ -29,8 +28,9 @@ def _require(name):
 
 def init():
     """Connect to the bucket. Raises if it is unreachable, so a bad deploy fails at boot."""
-    global _bucket, _public_base, _client
+    global _bucket, _public_base, _client, _jpeg_quality
 
+    _jpeg_quality = int(os.getenv("JPEG_QUALITY", 85))
     _bucket = _require("S3_BUCKET")
     _public_base = _require("S3_PUBLIC_BASE_URL").rstrip("/")
 
@@ -59,7 +59,7 @@ def public_url(key):
 
 def upload_frame(frame, key):
     """Encode a BGR frame as JPEG and store it. Returns the public URL."""
-    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), _jpeg_quality])
     if not ok:
         raise RuntimeError(f"Failed to encode frame for {key}")
 

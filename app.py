@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+
+# Before any import that reads the environment.
+load_dotenv()
+
 import cv2
 import numpy as np
 import requests
