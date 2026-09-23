@@ -44,7 +44,6 @@ CAL_POINTS = [
     (55,  3.80),
     (143, 3.40),
     (185, 3.20),
-    (143, 3.40),
     (224, 3.00),
     (263, 2.80),
     (282, 2.70),
@@ -122,6 +121,87 @@ def level_to_pixel(level_m: float) -> float:
 save_directory = "images"
 if not os.path.exists(save_directory):
     os.makedirs(save_directory)
+
+# =========================
+# Homography Alignment
+# =========================
+REFERENCE_IMAGE_PATH = os.path.join(save_directory, "reference_frame.jpg")
+reference_data = {"image": None, "keypoints": None, "descriptors": None}
+# Initialize ORB detector
+orb = cv2.ORB_create(nfeatures=2000)
+
+def init_reference_frame(frame):
+    """Initialize or load the reference frame for homography."""
+    global reference_data
+    if os.path.exists(REFERENCE_IMAGE_PATH):
+        ref_img = cv2.imread(REFERENCE_IMAGE_PATH)
+        if ref_img is not None:
+            gray_ref = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+            kp, des = orb.detectAndCompute(gray_ref, None)
+            reference_data["image"] = ref_img
+            reference_data["keypoints"] = kp
+            reference_data["descriptors"] = des
+            print("Loaded reference frame for homography.")
+            return True
+            
+    # If not exists or failed to load, save current frame as reference
+    print("Saving new reference frame for homography.")
+    cv2.imwrite(REFERENCE_IMAGE_PATH, frame)
+    gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    kp, des = orb.detectAndCompute(gray_ref, None)
+    reference_data["image"] = frame.copy()
+    reference_data["keypoints"] = kp
+    reference_data["descriptors"] = des
+    return True
+
+def align_image(frame):
+    """Align the given frame to the reference frame using ORB feature matching."""
+    global reference_data
+    
+    if reference_data["image"] is None:
+        init_reference_frame(frame)
+        return frame # First frame is reference
+        
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    kp_frame, des_frame = orb.detectAndCompute(gray_frame, None)
+    
+    if des_frame is None or reference_data["descriptors"] is None:
+        return frame
+        
+    # Match features
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(reference_data["descriptors"], des_frame)
+    matches = sorted(matches, key=lambda x: x.distance)
+    
+    # Keep top matches
+    GOOD_MATCH_PERCENT = 0.15
+    num_good_matches = int(len(matches) * GOOD_MATCH_PERCENT)
+    matches = matches[:num_good_matches]
+    
+    if len(matches) < 10:
+        print("Not enough matches for homography, returning original frame.")
+        return frame
+        
+    # Extract location of good matches
+    points1 = np.zeros((len(matches), 2), dtype=np.float32)
+    points2 = np.zeros((len(matches), 2), dtype=np.float32)
+    
+    for i, match in enumerate(matches):
+        points1[i, :] = reference_data["keypoints"][match.queryIdx].pt
+        points2[i, :] = kp_frame[match.trainIdx].pt
+        
+    # Find homography
+    h_matrix, inliers = cv2.findHomography(points2, points1, cv2.RANSAC)
+    
+    if h_matrix is not None:
+        # Warp frame to align with reference
+        height, width, channels = reference_data["image"].shape
+        aligned_frame = cv2.warpPerspective(frame, h_matrix, (width, height))
+        print("Successfully aligned frame to reference.")
+        return aligned_frame
+    
+    print("Homography matrix calculation failed, returning original frame.")
+    return frame
 
 def cache_key():
     """Return a unique cache key based on the request URL path."""
@@ -1023,15 +1103,18 @@ def get_status():
     if original_frame is None:
         return jsonify({"error": "Failed to capture frame from any video segment."}), 500
 
+    # Align frame to handle camera movement
+    aligned_frame = align_image(original_frame)
+
     # Perform enhanced detection with smoothing
-    raw_detection = detect_yellow_region_fused(original_frame)
+    raw_detection = detect_yellow_region_fused(aligned_frame)
     y_lowest_yellow = smooth_detection(raw_detection)
 
     if y_lowest_yellow is None:
         water_level = previous_water_level
         print("Yellow region not detected, using previous water level:", water_level)
 
-        original_image_filename = save_image(original_frame, "water_level_image", "_original")
+        original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
         
         # Clean up old images to maintain MAX_KEEP limit
         rotate_images()
@@ -1052,13 +1135,13 @@ def get_status():
     water_level = float(pixel_to_level(float(y_lowest_yellow)))
     previous_water_level = water_level
 
-    processed_frame = original_frame.copy()
+    processed_frame = aligned_frame.copy()
     # Draw reference ticks for context
     draw_reference_ticks(processed_frame, y_lowest_yellow)
 
     processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
-    original_image_filename = save_image(original_frame, "water_level_image", "_original")
-    water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
+    original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
+    water_level_line_image = generate_water_level_line_image(aligned_frame, y_lowest_yellow, water_level)
     water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
     
     # Clean up old images to maintain MAX_KEEP limit
@@ -1092,16 +1175,18 @@ def debug_detection():
         original_frame = capture_last_frame_from_video(video_url)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
+            
+        aligned_frame = align_image(original_frame)
         
         # Create debug visualization
-        debug_image = visualize_detection_debug(original_frame)
+        debug_image = visualize_detection_debug(aligned_frame)
         
         # Run detection
-        detected_y = detect_yellow_region_fused(original_frame)
+        detected_y = detect_yellow_region_fused(aligned_frame)
         
         # Draw detection result on debug image
         if detected_y is not None:
-            h = original_frame.shape[0]
+            h = aligned_frame.shape[0]
             cv2.line(debug_image, (0, detected_y), (debug_image.shape[1], detected_y), (0, 0, 255), 3)
             cv2.putText(debug_image, f"Detected Y: {detected_y}", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -1130,12 +1215,14 @@ def debug_water_level():
         original_frame = capture_last_frame_from_video(video_url)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
+            
+        aligned_frame = align_image(original_frame)
         
         # Run water level detection
-        detected_y = detect_water_level_on_gauge(original_frame)
+        detected_y = detect_water_level_on_gauge(aligned_frame)
         
         # Create water level debug visualization
-        debug_image = visualize_water_level_debug(original_frame)
+        debug_image = visualize_water_level_debug(aligned_frame)
         
         # Save debug image
         debug_filename = save_image(debug_image, "water_level_debug")
