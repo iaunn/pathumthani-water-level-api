@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Water Level Calibration</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        h1 { margin-top: 0; }
+        .container { display: flex; gap: 20px; max-width: 1400px; margin: 0 auto; }
+        .canvas-container { position: relative; border: 1px solid #ccc; background: #fff; overflow: hidden; }
+        canvas { cursor: crosshair; display: block; }
+        .sidebar { width: 350px; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: fit-content; }
+        .point-list { margin-top: 20px; max-height: 500px; overflow-y: auto; }
+        .point-item { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; padding: 10px; background: #f9f9f9; border-radius: 4px; border: 1px solid #eee; }
+        .point-item input { width: 80px; padding: 5px; }
+        .btn { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; background: #007bff; color: white; font-weight: bold; }
+        .btn:hover { background: #0056b3; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-success { background: #28a745; width: 100%; padding: 12px; font-size: 16px; margin-top: 20px; }
+        .btn-success:hover { background: #218838; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; }
+        .loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); display: flex; justify-content: center; align-items: center; font-size: 20px; font-weight: bold; }
+        .instructions { font-size: 14px; color: #666; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="canvas-container" id="canvasContainer">
+        <canvas id="calCanvas"></canvas>
+        <div id="loading" class="loading">Loading Camera Frame...</div>
+    </div>
+    
+    <div class="sidebar">
+        <h1>Calibration</h1>
+        <p class="instructions">
+            - Drag the green lines on the image to adjust pixel positions.<br>
+            - Edit the Water Level (m) in the boxes below.<br>
+            - Saving will also set the current frame as the new baseline for homography.
+        </p>
+        
+        <div class="controls">
+            <button class="btn" onclick="addPoint()">+ Add Point</button>
+            <button class="btn" onclick="fetchData()" style="background:#6c757d;">Refresh Image</button>
+        </div>
+        
+        <button class="btn" onclick="testDetection()" style="background:#17a2b8; width: 100%; margin-bottom: 20px;">Test Detection</button>
+        <div id="testResult" style="margin-bottom: 20px; font-weight: bold; color: #dc3545;"></div>
+        
+        <div class="point-list" id="pointList">
+            <!-- Points will be injected here -->
+        </div>
+        
+        <button class="btn btn-success" onclick="saveCalibration()">Save Calibration</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('calCanvas');
+    const ctx = canvas.getContext('2d');
+    const loading = document.getElementById('loading');
+    
+    let imageObj = new Image();
+    let points = [];
+    let isDragging = false;
+    let dragIndex = -1;
+    let hoverIndex = -1;
+    let imgScale = 1;
+
+    // Load data from backend
+    async function fetchData() {
+        loading.style.display = 'flex';
+        try {
+            // Get current calibration points
+            const calRes = await fetch('/api/calibration');
+            const calData = await calRes.json();
+            points = calData.points.map((p, index) => ({ id: index, pixel: p[0], level: p[1] }));
+            
+            // Get reference frame
+            const imgRes = await fetch('/api/calibration/frame');
+            const imgData = await imgRes.json();
+            
+            if(imgData.image_url) {
+                imageObj.src = imgData.image_url;
+                imageObj.onload = () => {
+                    initCanvas();
+                    loading.style.display = 'none';
+                };
+            }
+        } catch (e) {
+            console.error("Error fetching data:", e);
+            alert("Failed to load calibration data.");
+            loading.style.display = 'none';
+        }
+    }
+
+    function initCanvas() {
+        canvas.width = imageObj.width;
+        canvas.height = imageObj.height;
+        render();
+        renderSidebar();
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (imageObj.src) {
+            ctx.drawImage(imageObj, 0, 0, canvas.width, canvas.height);
+        }
+        
+        // Draw points
+        points.forEach((p, i) => {
+            const isHover = (i === hoverIndex || i === dragIndex);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, p.pixel);
+            ctx.lineTo(canvas.width, p.pixel);
+            ctx.strokeStyle = isHover ? '#ffeb3b' : '#00ff00';
+            ctx.lineWidth = isHover ? 3 : 2;
+            ctx.stroke();
+            
+            // Draw label
+            ctx.fillStyle = isHover ? '#ffeb3b' : '#00ff00';
+            ctx.font = '16px Arial';
+            ctx.fillRect(canvas.width - 100, p.pixel - 25, 90, 24);
+            ctx.fillStyle = '#000';
+            ctx.fillText(p.level.toFixed(2) + 'm', canvas.width - 90, p.pixel - 7);
+        });
+        
+        // Draw test detection result if available
+        if (testDetectedPixel !== null) {
+            ctx.beginPath();
+            ctx.moveTo(0, testDetectedPixel);
+            ctx.lineTo(canvas.width, testDetectedPixel);
+            ctx.strokeStyle = '#dc3545'; // Red color
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 10]); // Dashed line
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset
+            
+            ctx.fillStyle = '#dc3545';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText('Detected Level', 10, testDetectedPixel - 10);
+        }
+    }
+
+    function renderSidebar() {
+        const list = document.getElementById('pointList');
+        list.innerHTML = '';
+        
+        // Sort by pixel (top to bottom)
+        points.sort((a, b) => a.pixel - b.pixel);
+        
+        points.forEach((p, i) => {
+            const div = document.createElement('div');
+            div.className = 'point-item';
+            div.onmouseenter = () => { hoverIndex = i; render(); };
+            div.onmouseleave = () => { hoverIndex = -1; render(); };
+            
+            div.innerHTML = `
+                <div style="width: 30px; font-weight: bold;">#${i+1}</div>
+                <div>
+                    <div><small>Pixel Y:</small></div>
+                    <input type="number" value="${Math.round(p.pixel)}" onchange="updatePixel(${i}, this.value)">
+                </div>
+                <div>
+                    <div><small>Level (m):</small></div>
+                    <input type="number" step="0.1" value="${p.level.toFixed(2)}" onchange="updateLevel(${i}, this.value)">
+                </div>
+                <button class="btn btn-danger" style="margin-left: auto;" onclick="deletePoint(${i})">X</button>
+            `;
+            list.appendChild(div);
+        });
+    }
+
+    function addPoint() {
+        points.push({
+            id: Date.now(),
+            pixel: canvas.height - 10,  // Start near the bottom of the canvas
+            level: 3.00
+        });
+        renderSidebar();
+        render();
+    }
+
+    function deletePoint(index) {
+        points.splice(index, 1);
+        renderSidebar();
+        render();
+    }
+
+    function updatePixel(index, val) {
+        points[index].pixel = parseFloat(val);
+        render();
+    }
+
+    function updateLevel(index, val) {
+        points[index].level = parseFloat(val);
+        render();
+    }
+
+    async function saveCalibration() {
+        const payload = points.map(p => [Math.round(p.pixel), parseFloat(p.level)]);
+        // Sort by pixel before saving
+        payload.sort((a, b) => a[0] - b[0]);
+        
+        try {
+            const res = await fetch('/api/calibration', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ points: payload })
+            });
+            
+            if (res.ok) {
+                alert("Calibration saved successfully! New reference frame set.");
+            } else {
+                alert("Failed to save calibration.");
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Error saving calibration.");
+        }
+    }
+
+    // Mouse events for dragging
+    canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+        
+        // Find if we clicked near a line (within 10 pixels)
+        const hitThreshold = 10;
+        for (let i = 0; i < points.length; i++) {
+            if (Math.abs(points[i].pixel - y) <= hitThreshold) {
+                isDragging = true;
+                dragIndex = i;
+                break;
+            }
+        }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+        
+        if (isDragging && dragIndex !== -1) {
+            points[dragIndex].pixel = y;
+            render();
+            // Debounce or only update sidebar on mouseup to avoid losing input focus
+        } else {
+            // Hover effect
+            let newHover = -1;
+            const hitThreshold = 10;
+            for (let i = 0; i < points.length; i++) {
+                if (Math.abs(points[i].pixel - y) <= hitThreshold) {
+                    newHover = i;
+                    break;
+                }
+            }
+            if (newHover !== hoverIndex) {
+                hoverIndex = newHover;
+                render();
+            }
+        }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            dragIndex = -1;
+            renderSidebar(); // Update the input boxes with new pixel values
+        }
+    });
+    
+    canvas.addEventListener('mouseleave', () => {
+        if (isDragging) {
+            isDragging = false;
+            dragIndex = -1;
+            renderSidebar();
+        }
+        hoverIndex = -1;
+        render();
+    });
+
+    let testDetectedPixel = null;
+
+    async function testDetection() {
+        loading.style.display = 'flex';
+        document.getElementById('testResult').innerText = "Testing...";
+        testDetectedPixel = null;
+        render(); // clear old test line
+        try {
+            // We can call /debug-water to test the detection
+            const res = await fetch('/debug-water');
+            const data = await res.json();
+            
+            if (data.detection_success && data.detected_y_pixel !== null) {
+                testDetectedPixel = data.detected_y_pixel;
+                document.getElementById('testResult').innerText = `Detected Water Level at Y: ${testDetectedPixel} (${data.water_level_meters ? data.water_level_meters.toFixed(2) + 'm' : 'N/A'})`;
+            } else {
+                document.getElementById('testResult').innerText = "Detection failed. Could not find water level.";
+            }
+            render();
+        } catch (e) {
+            console.error(e);
+            document.getElementById('testResult').innerText = "Error calling detection API.";
+        }
+        loading.style.display = 'none';
+    }
+
+    // Initial load
+    fetchData();
+</script>
+
+</body>
+</html>

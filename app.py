@@ -3,7 +3,8 @@ import numpy as np
 import requests
 import os
 import warnings
-from flask import Flask, jsonify, send_from_directory, request
+import json
+from flask import Flask, jsonify, send_from_directory, request, render_template
 from datetime import datetime
 from flask_caching import Cache
 
@@ -39,23 +40,43 @@ MAX_HISTORY = 5
 # =========================
 # Pixel is measured from top of the image (y increases downward)
 # Ensure points are sorted by pixel (descending level with increasing pixel)
-CAL_POINTS = [
-    (34,  3.90),
-    (55,  3.80),
-    (143, 3.40),
-    (185, 3.20),
-    (143, 3.40),
-    (224, 3.00),
-    (263, 2.80),
-    (282, 2.70),
-    (317, 2.50),
-]
-# sort by pixel ascending just in case
-CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])  # [(20,4.0), (34,3.9), (235,3.0), (317,2.5)]
+CALIBRATION_FILE = "calibration.json"
+CAL_POINTS = []
+
+def load_calibration():
+    global CAL_POINTS
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, "r") as f:
+                data = json.load(f)
+                points = data.get("points", [])
+                if points:
+                    CAL_POINTS = [tuple(p) for p in points]
+        except Exception as e:
+            print(f"Error loading calibration: {e}")
+            
+    CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])
+
+def save_calibration_to_file(points):
+    try:
+        with open(CALIBRATION_FILE, "w") as f:
+            json.dump({"points": points}, f, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving calibration: {e}")
+        return False
+
+# Load from file on startup
+load_calibration()
 
 # Useful bounds
-PIX_MIN, LVL_MAX = CAL_POINTS[0]
-PIX_MAX, LVL_MIN = CAL_POINTS[-1]
+def get_bounds():
+    if CAL_POINTS:
+        return CAL_POINTS[0], CAL_POINTS[-1]
+    return (0, 0), (0, 0)
+
+PIX_MIN, LVL_MAX = get_bounds()[0]
+PIX_MAX, LVL_MIN = get_bounds()[1]
 
 def pixel_to_level(y: float) -> float:
     """
@@ -122,6 +143,87 @@ def level_to_pixel(level_m: float) -> float:
 save_directory = "images"
 if not os.path.exists(save_directory):
     os.makedirs(save_directory)
+
+# =========================
+# Homography Alignment
+# =========================
+REFERENCE_IMAGE_PATH = os.path.join(save_directory, "reference_frame.jpg")
+reference_data = {"image": None, "keypoints": None, "descriptors": None}
+# Initialize ORB detector
+orb = cv2.ORB_create(nfeatures=2000)
+
+def init_reference_frame(frame):
+    """Initialize or load the reference frame for homography."""
+    global reference_data
+    if os.path.exists(REFERENCE_IMAGE_PATH):
+        ref_img = cv2.imread(REFERENCE_IMAGE_PATH)
+        if ref_img is not None:
+            gray_ref = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+            kp, des = orb.detectAndCompute(gray_ref, None)
+            reference_data["image"] = ref_img
+            reference_data["keypoints"] = kp
+            reference_data["descriptors"] = des
+            print("Loaded reference frame for homography.")
+            return True
+            
+    # If not exists or failed to load, save current frame as reference
+    print("Saving new reference frame for homography.")
+    cv2.imwrite(REFERENCE_IMAGE_PATH, frame)
+    gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    kp, des = orb.detectAndCompute(gray_ref, None)
+    reference_data["image"] = frame.copy()
+    reference_data["keypoints"] = kp
+    reference_data["descriptors"] = des
+    return True
+
+def align_image(frame):
+    """Align the given frame to the reference frame using ORB feature matching."""
+    global reference_data
+    
+    if reference_data["image"] is None:
+        init_reference_frame(frame)
+        return frame # First frame is reference
+        
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    kp_frame, des_frame = orb.detectAndCompute(gray_frame, None)
+    
+    if des_frame is None or reference_data["descriptors"] is None:
+        return frame
+        
+    # Match features
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(reference_data["descriptors"], des_frame)
+    matches = sorted(matches, key=lambda x: x.distance)
+    
+    # Keep top matches
+    GOOD_MATCH_PERCENT = 0.15
+    num_good_matches = int(len(matches) * GOOD_MATCH_PERCENT)
+    matches = matches[:num_good_matches]
+    
+    if len(matches) < 10:
+        print("Not enough matches for homography, returning original frame.")
+        return frame
+        
+    # Extract location of good matches
+    points1 = np.zeros((len(matches), 2), dtype=np.float32)
+    points2 = np.zeros((len(matches), 2), dtype=np.float32)
+    
+    for i, match in enumerate(matches):
+        points1[i, :] = reference_data["keypoints"][match.queryIdx].pt
+        points2[i, :] = kp_frame[match.trainIdx].pt
+        
+    # Find homography
+    h_matrix, inliers = cv2.findHomography(points2, points1, cv2.RANSAC)
+    
+    if h_matrix is not None:
+        # Warp frame to align with reference
+        height, width, channels = reference_data["image"].shape
+        aligned_frame = cv2.warpPerspective(frame, h_matrix, (width, height))
+        print("Successfully aligned frame to reference.")
+        return aligned_frame
+    
+    print("Homography matrix calculation failed, returning original frame.")
+    return frame
 
 def cache_key():
     """Return a unique cache key based on the request URL path."""
@@ -545,145 +647,30 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390):
     if not contours:
         return None
     
-    # Select largest contour (the gauge)
-    gauge_contour = max(contours, key=cv2.contourArea)
-    x_gauge, y_gauge_top, w_gauge, h_gauge = cv2.boundingRect(gauge_contour)
-    
-    # Extend gauge region slightly for water interface detection
-    gauge_roi_x1 = max(0, x_gauge - 5)
-    gauge_roi_x2 = min(w, x_gauge + w_gauge + 5)
-    gauge_roi_y1 = max(0, y_gauge_top - 10)
-    gauge_roi_y2 = min(h, y_gauge_top + h_gauge + 10)
-    
-    gauge_roi = image[gauge_roi_y1:gauge_roi_y2, gauge_roi_x1:gauge_roi_x2]
-    
-    if gauge_roi.size == 0:
-        return None
-    
-    # 2. WATER INTERFACE DETECTION USING GRADIENT ANALYSIS
-    # Convert ROI to grayscale
-    gray_roi = cv2.cvtColor(gauge_roi, cv2.COLOR_BGR2GRAY)
-    
-    # Apply Gaussian blur to reduce noise
-    blurred_roi = cv2.GaussianBlur(gray_roi, (3, 3), 0)
-    
-    # Calculate vertical gradient (focus on horizontal transitions)
-    gradient_y = cv2.Sobel(blurred_roi, cv2.CV_64F, 0, 1, ksize=3)
-    gradient_y = np.abs(gradient_y)
-    
-    # Find the strongest horizontal gradient (water surface typically has significant contrast)
-    water_candidates = []
-    
-    # Scan vertically through the gauge ROI
-    for y_offset in range(10, gauge_roi.shape[0] - 10):
-        # Get horizontal line of gradient values
-        line_gradient = gradient_y[y_offset, :]
-        
-        # Calculate gradient strength for this line
-        gradient_strength = np.mean(line_gradient)
-        gradient_variance = np.var(line_gradient)
-        
-        # Check if this line shows water-like characteristics
-        roi_line = gauge_roi[y_offset-2:y_offset+3, :]
-        
-        if roi_line.size > 0:
-            # Check color properties of the line area
-            hsv_line = cv2.cvtColor(roi_line, cv2.COLOR_BGR2HSV)
-            
-            # Dark/brown water detection
-            lower_dark = np.array([0, 0, 0])
-            upper_dark = np.array([180, 255, 100])  # Low brightness for water
-            dark_mask = cv2.inRange(hsv_line, lower_dark, upper_dark)
-            dark_ratio = np.sum(dark_mask > 0) / roi_line.size
-            
-            # Yellow gauge detection for comparison
-            lower_yellow = np.array([20, 100, 120])
-            upper_yellow = np.array([30, 255, 255])
-            yellow_mask = cv2.inRange(hsv_line, lower_yellow, upper_yellow)
-            yellow_ratio = np.sum(yellow_mask > 0) / roi_line.size
-            
-            # Score this line as potential water level
-            # High gradient strength + reasonable water color + low yellow ratio
-            water_score = gradient_strength * (1 + gradient_variance / 1000) * (dark_ratio > 0.3) * (yellow_ratio < 0.4)
-            
-            if water_score > 50:  # Threshold for water level candidate
-                absolute_y = gauge_roi_y1 + y_offset
-                water_candidates.append((absolute_y, water_score, dark_ratio, yellow_ratio))
-    
-    # 3. REFINE WATER LEVEL USING TEMPORAL COHERENCE AND PHYSICS
-    if water_candidates:
-        # Sort by position (lowest water level first) and score
-        water_candidates.sort(key=lambda x: (x[0], -x[1]))
-        
-        # Select candidates that make physical sense:
-        # 1. Should be near the middle-lower portion of gauge
-        # 2. Should have significant water color vs gauge color
-        # 3. Should have strong gradient signature
-        
-        valid_candidates = []
-        gauge_center_y = y_gauge_top + h_gauge // 2
-        
-        for candidate in water_candidates:
-            y_pos, score, dark_ratio, yellow_ratio = candidate
-            
-            # Skip if too close to bottom (water level rarely at very bottom of gauge)
-            if y_pos > y_gauge_top + h_gauge * 0.9:
-                continue
+    # Filter contours that are likely the gauge (tall and relatively large)
+    valid_contours = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 500:
+            x, y, w_rect, h_rect = cv2.boundingRect(cnt)
+            if h_rect > w_rect: # Should be taller than wide
+                valid_contours.append(cnt)
                 
-            # Skip if too close to top (water level rarely at very top)
-            if y_pos < y_gauge_top + h_gauge * 0.1:
-                continue
-            
-            # Prefer candidates with good water-to-gauge ratio
-            if dark_ratio > 0.2 and yellow_ratio < 0.6:
-                valid_candidates.append((y_pos, score, dark_ratio, yellow_ratio))
+    if not valid_contours:
+        # Fallback to the largest one
+        valid_contours = [max(contours, key=cv2.contourArea)]
         
-        if valid_candidates:
-            # Select the best candidate based on combined score
-            # Weight position (prefer middle-lower), score, and color balance
-            final_scores = []
-            for candidate in valid_candidates:
-                y_pos, score, dark_ratio, yellow_ratio = candidate
-                
-                # Position score: prefer lower but not bottom
-                position_weight = 1.2 if y_gauge_top + h_gauge * 0.3 <= y_pos <= y_gauge_top + h_gauge * 0.8 else 1.0
-                
-                # Color balance score
-                color_balance = dark_ratio / max(yellow_ratio, 0.1)
-                
-                # Combined score
-                final_score = score * position_weight * color_balance
-                final_scores.append((y_pos, final_score))
+    # Find the contour that extends furthest down
+    lowest_bottom = 0
+    for cnt in valid_contours:
+        x, y, w_rect, h_rect = cv2.boundingRect(cnt)
+        bottom = y + h_rect
+        if bottom > lowest_bottom:
+            lowest_bottom = bottom
             
-            if final_scores:
-                # Return the position with highest combined score
-                final_scores.sort(key=lambda x: -x[1])
-                return int(final_scores[0][0])
-    
-    # 4. FALLBACK: Use color-based detection in gauge region
-    # Look for significant color change from yellow gauge to darker water
-    for y_offset in range(gauge_roi.shape[0] // 3, gauge_roi.shape[0]):
-        if y_offset >= gauge_roi.shape[0]:
-            break
-            
-        # Sample lines above and below current position
-        above_line = gauge_roi[max(0, y_offset-5):y_offset, :]
-        below_line = gauge_roi[y_offset:min(gauge_roi.shape[0], y_offset+5), :]
+    if lowest_bottom > 0:
+        return lowest_bottom
         
-        if above_line.size > 0 and below_line.size > 0:
-            # Above should be more yellow (gauge), below should be more water-colored
-            above_hsv = cv2.cvtColor(above_line, cv2.COLOR_BGR2HSV)
-            below_hsv = cv2.cvtColor(below_line, cv2.COLOR_BGR2HSV)
-            
-            # Check brightness difference (water typically darker)
-            above_brightness = np.mean(above_hsv[:, :, 2])
-            below_brightness = np.mean(below_hsv[:, :, 2])
-            
-            # Significant brightness change indicates water interface
-            if below_brightness < above_brightness * 0.8:
-                absolute_y = gauge_roi_y1 + y_offset
-                return int(absolute_y)
-    
     return None
 
 def detect_yellow_region_fused(image, x_start=225, x_end=390):
@@ -1023,15 +1010,18 @@ def get_status():
     if original_frame is None:
         return jsonify({"error": "Failed to capture frame from any video segment."}), 500
 
+    # Align frame to handle camera movement
+    aligned_frame = align_image(original_frame)
+
     # Perform enhanced detection with smoothing
-    raw_detection = detect_yellow_region_fused(original_frame)
+    raw_detection = detect_yellow_region_fused(aligned_frame)
     y_lowest_yellow = smooth_detection(raw_detection)
 
     if y_lowest_yellow is None:
         water_level = previous_water_level
         print("Yellow region not detected, using previous water level:", water_level)
 
-        original_image_filename = save_image(original_frame, "water_level_image", "_original")
+        original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
         
         # Clean up old images to maintain MAX_KEEP limit
         rotate_images()
@@ -1052,13 +1042,13 @@ def get_status():
     water_level = float(pixel_to_level(float(y_lowest_yellow)))
     previous_water_level = water_level
 
-    processed_frame = original_frame.copy()
+    processed_frame = aligned_frame.copy()
     # Draw reference ticks for context
     draw_reference_ticks(processed_frame, y_lowest_yellow)
 
     processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
-    original_image_filename = save_image(original_frame, "water_level_image", "_original")
-    water_level_line_image = generate_water_level_line_image(original_frame, y_lowest_yellow, water_level)
+    original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
+    water_level_line_image = generate_water_level_line_image(aligned_frame, y_lowest_yellow, water_level)
     water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
     
     # Clean up old images to maintain MAX_KEEP limit
@@ -1092,16 +1082,18 @@ def debug_detection():
         original_frame = capture_last_frame_from_video(video_url)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
+            
+        aligned_frame = align_image(original_frame)
         
         # Create debug visualization
-        debug_image = visualize_detection_debug(original_frame)
+        debug_image = visualize_detection_debug(aligned_frame)
         
         # Run detection
-        detected_y = detect_yellow_region_fused(original_frame)
+        detected_y = detect_yellow_region_fused(aligned_frame)
         
         # Draw detection result on debug image
         if detected_y is not None:
-            h = original_frame.shape[0]
+            h = aligned_frame.shape[0]
             cv2.line(debug_image, (0, detected_y), (debug_image.shape[1], detected_y), (0, 0, 255), 3)
             cv2.putText(debug_image, f"Detected Y: {detected_y}", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -1130,12 +1122,14 @@ def debug_water_level():
         original_frame = capture_last_frame_from_video(video_url)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
+            
+        aligned_frame = align_image(original_frame)
         
         # Run water level detection
-        detected_y = detect_water_level_on_gauge(original_frame)
+        detected_y = detect_water_level_on_gauge(aligned_frame)
         
         # Create water level debug visualization
-        debug_image = visualize_water_level_debug(original_frame)
+        debug_image = visualize_water_level_debug(aligned_frame)
         
         # Save debug image
         debug_filename = save_image(debug_image, "water_level_debug")
@@ -1156,6 +1150,62 @@ def debug_water_level():
         
     except Exception as e:
         return jsonify({"error": f"Water level debug failed: {str(e)}"}), 500
+
+@app.route('/calibrate', methods=['GET'])
+def calibrate_ui():
+    """Serve the calibration UI page."""
+    return render_template('calibrate.html')
+
+@app.route('/api/calibration', methods=['GET', 'POST'])
+def handle_calibration():
+    """Get or update calibration points."""
+    global CAL_POINTS, PIX_MIN, LVL_MAX, PIX_MAX, LVL_MIN
+    
+    if request.method == 'GET':
+        return jsonify({"points": CAL_POINTS})
+        
+    elif request.method == 'POST':
+        data = request.json
+        if not data or 'points' not in data:
+            return jsonify({"error": "Invalid payload"}), 400
+            
+        points = data['points']
+        # Validate format
+        if not isinstance(points, list) or not all(isinstance(p, list) and len(p) == 2 for p in points):
+            return jsonify({"error": "Points must be a list of [pixel, level] pairs"}), 400
+            
+        if save_calibration_to_file(points):
+            load_calibration()
+            PIX_MIN, LVL_MAX = get_bounds()[0]
+            PIX_MAX, LVL_MIN = get_bounds()[1]
+            return jsonify({"success": True, "points": CAL_POINTS})
+        else:
+            return jsonify({"error": "Failed to save calibration"}), 500
+
+@app.route('/api/calibration/frame', methods=['GET'])
+def get_calibration_frame():
+    """Fetch the latest video frame, set it as homography reference, and return its URL."""
+    try:
+        video_url = get_video_url()
+        if not video_url:
+            return jsonify({"error": "Failed to get video URL"}), 500
+            
+        original_frame = capture_last_frame_from_video(video_url)
+        if original_frame is None:
+            return jsonify({"error": "Failed to capture frame"}), 500
+            
+        # Set this new frame as the reference for homography
+        init_reference_frame(original_frame)
+        
+        # Save frame to return to UI
+        filename = save_image(original_frame, "calibration_frame")
+        base_ = request.host_url
+        
+        return jsonify({
+            "image_url": f"{base_}images/{filename}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get calibration frame: {str(e)}"}), 500
 
 # Run Flask app
 if __name__ == '__main__':
