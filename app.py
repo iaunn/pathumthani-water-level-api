@@ -75,7 +75,18 @@ load_calibration()
 # =========================
 # History Tracking
 # =========================
-MAX_HISTORY_RECORDS = 288 # 24 hours at 5 min intervals
+# Readings are small; keeping three years of them costs little and is what the
+# dashboard's longest range needs. Captures are pruned separately by MAX_KEEP,
+# since only recent frames are ever displayed.
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", 1095))
+
+# How far back a single view may span. Readings are kept for three years, but one
+# request covers at most three months of them, which keeps the aggregation inside
+# a few hundred milliseconds however far back the window is dragged.
+MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", 92))
+
+# How many raw captures the dashboard's strip and current reading need.
+RECENT_LIMIT = 24
 
 def background_tracker():
     """Runs every 5 minutes to capture and record the water level."""
@@ -104,7 +115,7 @@ def background_tracker():
                         # "y" lets the dashboard draw the detected waterline over
                         # the frame, so a wrong reading is visible rather than implied.
                         database.add_reading(timestamp, level, image_url, y)
-                        database.prune_readings(MAX_HISTORY_RECORDS)
+                        database.prune_readings(RETENTION_DAYS)
                         rotate_images()
                         print(f"Background check successful. Level: {level:.2f}m")
         except Exception as e:
@@ -1200,10 +1211,40 @@ def dashboard():
     """Serve the main dashboard."""
     return render_template('index.html')
 
+@app.route('/api/recent', methods=['GET'])
+def get_recent():
+    """Raw recent readings, for the current value and the capture strip."""
+    return jsonify(database.latest_readings(RECENT_LIMIT))
+
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """Return the historical water level data."""
-    return jsonify(database.recent_readings(MAX_HISTORY_RECORDS))
+    """
+    Level over a time range, for the chart.
+
+    Takes `from` and `to` as unix seconds; defaults to the last 24 hours. Long
+    spans come back averaged into buckets, with each point's true low and high,
+    so a three-year view is a few hundred points instead of a few hundred
+    thousand.
+    """
+    now = int(time.time())
+    try:
+        end_ts = int(request.args.get("to", now))
+        start_ts = int(request.args.get("from", end_ts - 86400))
+    except ValueError:
+        return jsonify({"error": "from and to must be unix seconds"}), 400
+
+    if start_ts >= end_ts:
+        return jsonify({"error": "from must be earlier than to"}), 400
+
+    # Clamp rather than reject: a range beyond retention has no data anyway, and
+    # an unbounded span would scan the whole collection.
+    start_ts = max(start_ts, end_ts - MAX_RANGE_DAYS * 86400)
+
+    series = database.history_series(start_ts, end_ts)
+    series["from"] = start_ts
+    series["to"] = end_ts
+    series["max_range_days"] = MAX_RANGE_DAYS
+    return jsonify(series)
 
 # Started here, not next to background_tracker: the thread runs immediately and
 # would race the rest of this module, calling helpers that are not defined yet.

@@ -34,37 +34,74 @@ def init():
 
 
 def add_reading(timestamp, level, image_url, y):
+    timestamp = int(timestamp)
+    level = round(float(level), 2)
+
     _readings.insert_one({
-        "timestamp": int(timestamp),
-        "level": round(float(level), 2),
+        "timestamp": timestamp,
+        "level": level,
         "image_url": image_url,
         "y": int(y),
         "created_at": datetime.now(timezone.utc),
     })
 
 
-def recent_readings(limit):
-    """Readings oldest-first, which is the order the dashboard charts them in."""
+def latest_readings(limit):
+    """Newest raw readings, oldest-first. Feeds the current value and the capture strip."""
     docs = _readings.find(
         {}, {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1}
     ).sort("timestamp", DESCENDING).limit(limit)
     return sorted(docs, key=lambda d: d["timestamp"])
 
 
-def prune_readings(keep):
-    """Drop readings beyond the newest `keep`, mirroring the capture rotation."""
-    total = _readings.count_documents({})
-    if total <= keep:
-        return 0
+# Smallest bucket first. A three-year span holds ~315k readings, so anything past a
+# couple of days has to be aggregated before it can reach a browser or a chart.
+_BUCKETS = [300, 900, 1800, 3600, 10800, 21600, 43200, 86400, 259200]
 
-    cutoff = list(
-        _readings.find({}, {"timestamp": 1}).sort("timestamp", DESCENDING).skip(keep).limit(1)
-    )
-    if not cutoff:
-        return 0
 
-    result = _readings.delete_many({"timestamp": {"$lte": cutoff[0]["timestamp"]}})
-    return result.deleted_count
+def _bucket_for(span_seconds, target_points):
+    for bucket in _BUCKETS:
+        if span_seconds / bucket <= target_points:
+            return bucket
+    return _BUCKETS[-1]
+
+
+def history_series(start_ts, end_ts, target_points=800):
+    """
+    Level over a time range, averaged into buckets when the span is long.
+
+    Each point also carries the true low/high within its bucket, so the summary
+    figures stay honest: on a year view a peak would otherwise be flattened by
+    the averaging and the dashboard would under-report it.
+    """
+    bucket = _bucket_for(max(1, end_ts - start_ts), target_points)
+
+    points = list(_readings.aggregate([
+        {"$match": {"timestamp": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
+        {"$group": {
+            "_id": {"$subtract": ["$timestamp", {"$mod": ["$timestamp", bucket]}]},
+            "level": {"$avg": "$level"},
+            "low": {"$min": "$level"},
+            "high": {"$max": "$level"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]))
+
+    return {
+        "bucket_seconds": bucket,
+        "points": [{
+            "timestamp": p["_id"],
+            "level": round(p["level"], 2),
+            "low": round(p["low"], 2),
+            "high": round(p["high"], 2),
+        } for p in points],
+    }
+
+
+def prune_readings(retention_days):
+    """Drop readings past the retention window."""
+    cutoff = int(datetime.now(timezone.utc).timestamp()) - retention_days * 86400
+    return _readings.delete_many({"timestamp": {"$lt": cutoff}}).deleted_count
 
 
 def load_calibration_points():

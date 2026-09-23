@@ -438,6 +438,42 @@
         box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
     }
 
+    .custom-range {
+        display: none;
+        align-items: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        background: var(--surface);
+    }
+    .custom-range.is-shown { display: flex; }
+    .custom-range label { font-size: 12px; color: var(--ink-muted); display: block; margin-bottom: 4px; }
+    .custom-range input {
+        font: inherit;
+        font-size: 13px;
+        color: var(--ink);
+        background: var(--plane);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        padding: 6px 9px;
+    }
+    .custom-range button {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--surface);
+        background: var(--series);
+        border: 0;
+        border-radius: var(--r-sm);
+        padding: 7px 15px;
+        cursor: pointer;
+    }
+    .range-note { font-size: 12px; color: var(--ink-muted); flex-basis: 100%; }
+    .range-note.is-error { color: var(--rise); font-weight: 600; }
+
     .plot { position: relative; height: 340px; }
     @media (max-width: 640px) { .plot { height: 260px; } }
     .plot canvas { transition: opacity .2s ease; }
@@ -617,10 +653,25 @@
             <p id="trendSub">Readings captured every 5 minutes</p>
         </div>
         <div class="segmented" id="rangeControl" role="group" data-i18n-aria="timeRange" aria-label="Time range">
-            <button type="button" data-hours="6" aria-pressed="false">6h</button>
-            <button type="button" data-hours="12" aria-pressed="false">12h</button>
-            <button type="button" data-hours="24" aria-pressed="true">24h</button>
+            <button type="button" data-days="1" aria-pressed="true">24h</button>
+            <button type="button" data-days="7" aria-pressed="false">7d</button>
+            <button type="button" data-days="30" aria-pressed="false">30d</button>
+            <button type="button" data-days="92" aria-pressed="false">3<span data-i18n="monthsShort">mo</span></button>
+            <button type="button" data-custom="1" aria-pressed="false" data-i18n="customRange">Custom</button>
         </div>
+    </div>
+
+    <div class="custom-range" id="customRange">
+        <div>
+            <label for="rangeFrom" data-i18n="rangeFrom">From</label>
+            <input type="date" id="rangeFrom">
+        </div>
+        <div>
+            <label for="rangeTo" data-i18n="rangeTo">To</label>
+            <input type="date" id="rangeTo">
+        </div>
+        <button type="button" id="rangeApply" data-i18n="rangeApply">Apply</button>
+        <p class="range-note" id="rangeNote"></p>
     </div>
 
     <section class="card" id="trendCard">
@@ -675,9 +726,17 @@
     "use strict";
 
     var REFRESH_MS = 300000;
+    var DAY = 86400;
+    var MAX_RANGE_DAYS = 92;   // one view spans at most three months
+    var MAX_AGE_DAYS = 1095;   // ...anywhere inside three years of history
+
     var state = {
-        history: [],
-        rangeHours: 24,
+        recent: [],       // raw readings for the current value and capture strip
+        series: [],       // chart points for the selected range, possibly averaged
+        bucket: 300,
+        rangeDays: 1,
+        from: null,       // set only for a custom range
+        to: null,
         gauge: null,
         selected: null,
         chart: null,
@@ -728,6 +787,27 @@
             steady: "Steady",
             deltaMoved: " {d} m in the last 5 minutes",
             deltaSteady: " over the last 5 minutes",
+            monthsShort: "mo",
+            customRange: "Custom",
+            rangeFrom: "From",
+            rangeTo: "To",
+            rangeApply: "Apply",
+            rangeHint: "Up to {d} days per view, anywhere in the last 3 years.",
+            rangeInvalid: "Pick both dates.",
+            rangeOrder: "The start date must come first.",
+            rangeTooLong: "One view covers at most {d} days.",
+            rangeTooOld: "History goes back {d} days.",
+            rangeLast: "Last {r}",
+            preset24h: "24 hours",
+            day: "day",
+            days: "days",
+            hour: "hour",
+            hours: "hours",
+            minute: "minute",
+            minutes: "minutes",
+            months: "months",
+            everyFiveMin: "readings captured every 5 minutes",
+            averagedEvery: "averaged every {d}",
             trendSub: "Last {h} hours \u00b7 readings captured every 5 minutes",
             gaugeAt: "Gauge at {t}"
         },
@@ -770,6 +850,27 @@
             steady: "\u0e04\u0e07\u0e17\u0e35\u0e48",
             deltaMoved: " {d} \u0e21. \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             deltaSteady: " \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
+            monthsShort: "\u0e14.",
+            customRange: "\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e40\u0e2d\u0e07",
+            rangeFrom: "\u0e15\u0e31\u0e49\u0e07\u0e41\u0e15\u0e48",
+            rangeTo: "\u0e16\u0e36\u0e07",
+            rangeApply: "\u0e41\u0e2a\u0e14\u0e07\u0e1c\u0e25",
+            rangeHint: "\u0e14\u0e39\u0e44\u0e14\u0e49\u0e04\u0e23\u0e31\u0e49\u0e07\u0e25\u0e30\u0e44\u0e21\u0e48\u0e40\u0e01\u0e34\u0e19 {d} \u0e27\u0e31\u0e19 \u0e22\u0e49\u0e2d\u0e19\u0e2b\u0e25\u0e31\u0e07\u0e44\u0e14\u0e49\u0e16\u0e36\u0e07 3 \u0e1b\u0e35",
+            rangeInvalid: "\u0e40\u0e25\u0e37\u0e2d\u0e01\u0e27\u0e31\u0e19\u0e17\u0e35\u0e48\u0e43\u0e2b\u0e49\u0e04\u0e23\u0e1a\u0e17\u0e31\u0e49\u0e07\u0e2a\u0e2d\u0e07\u0e0a\u0e48\u0e2d\u0e07",
+            rangeOrder: "\u0e27\u0e31\u0e19\u0e40\u0e23\u0e34\u0e48\u0e21\u0e15\u0e49\u0e2d\u0e07\u0e21\u0e32\u0e01\u0e48\u0e2d\u0e19\u0e27\u0e31\u0e19\u0e2a\u0e34\u0e49\u0e19\u0e2a\u0e38\u0e14",
+            rangeTooLong: "\u0e14\u0e39\u0e44\u0e14\u0e49\u0e04\u0e23\u0e31\u0e49\u0e07\u0e25\u0e30\u0e44\u0e21\u0e48\u0e40\u0e01\u0e34\u0e19 {d} \u0e27\u0e31\u0e19",
+            rangeTooOld: "\u0e21\u0e35\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e22\u0e49\u0e2d\u0e19\u0e2b\u0e25\u0e31\u0e07\u0e44\u0e14\u0e49 {d} \u0e27\u0e31\u0e19",
+            rangeLast: "{r}\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
+            preset24h: "24 \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07",
+            day: "\u0e27\u0e31\u0e19",
+            days: "\u0e27\u0e31\u0e19",
+            hour: "\u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07",
+            hours: "\u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07",
+            minute: "\u0e19\u0e32\u0e17\u0e35",
+            minutes: "\u0e19\u0e32\u0e17\u0e35",
+            months: "\u0e40\u0e14\u0e37\u0e2d\u0e19",
+            everyFiveMin: "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e17\u0e38\u0e01 5 \u0e19\u0e32\u0e17\u0e35",
+            averagedEvery: "\u0e40\u0e09\u0e25\u0e35\u0e48\u0e22\u0e17\u0e38\u0e01 {d}",
             trendSub: "{h} \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14 \u00b7 \u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e17\u0e38\u0e01 5 \u0e19\u0e32\u0e17\u0e35",
             gaugeAt: "\u0e20\u0e32\u0e1e\u0e40\u0e27\u0e25\u0e32 {t}"
         }
@@ -865,6 +966,27 @@
 
     /* ---------- formatting ---------- */
 
+    function spansOtherYear() {
+        var b = rangeBounds();
+        var thisYear = new Date().getFullYear();
+        return new Date(b.from * 1000).getFullYear() !== thisYear ||
+               new Date(b.to * 1000).getFullYear() !== thisYear;
+    }
+
+    function dayLabel(ts) {
+        var opts = { day: "numeric", month: "short" };
+        if (spansOtherYear()) opts.year = "numeric";
+        return new Date(ts * 1000).toLocaleDateString(locale(), opts);
+    }
+
+    function axisLabel(ts) {
+        var b = rangeBounds();
+        var span = b.to - b.from;
+        if (span <= 2 * DAY) return clockTime(ts);
+        if (span <= 14 * DAY) return dayLabel(ts) + " " + clockTime(ts);
+        return dayLabel(ts);
+    }
+
     function clockTime(ts) {
         return new Date(ts * 1000).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit", hour12: false });
     }
@@ -890,31 +1012,37 @@
 
     /* ---------- data ---------- */
 
-    function slice() {
-        if (!state.history.length) return [];
-        var cutoff = state.history[state.history.length - 1].timestamp - state.rangeHours * 3600;
-        return state.history.filter(function (r) { return r.timestamp >= cutoff; });
+    function rangeBounds() {
+        if (state.from && state.to) return { from: state.from, to: state.to };
+        var now = Math.floor(Date.now() / 1000);
+        return { from: now - state.rangeDays * DAY, to: now };
     }
 
     function load() {
         if (state.loaded) $("trendCard").classList.add("is-stale");
 
-        var jobs = [fetchJson("/api/history")];
+        var bounds = rangeBounds();
+        var jobs = [
+            fetchJson("/api/recent"),
+            fetchJson("/api/history?from=" + bounds.from + "&to=" + bounds.to)
+        ];
         if (!state.gauge) jobs.push(fetchJson("/api/calibration"));
 
         return Promise.all(jobs).then(function (res) {
-            var history = Array.isArray(res[0]) ? res[0] : [];
-            history = history.filter(function (r) {
+            state.recent = (Array.isArray(res[0]) ? res[0] : []).filter(function (r) {
                 return r && typeof r.timestamp === "number" && typeof r.level === "number";
             });
 
-            if (res[1] && Array.isArray(res[1].points) && res[1].points.length) {
-                var levels = res[1].points.map(function (p) { return p[1]; });
+            state.series = (res[1] && res[1].points) || [];
+            state.bucket = (res[1] && res[1].bucket_seconds) || 300;
+
+            var cal = res[2];
+            if (cal && Array.isArray(cal.points) && cal.points.length) {
+                var levels = cal.points.map(function (p) { return p[1]; });
                 state.gauge = { min: Math.min.apply(null, levels), max: Math.max.apply(null, levels) };
             }
 
-            state.history = history;
-            if (state.selected !== null && !history.some(function (r) { return r.timestamp === state.selected; })) {
+            if (state.selected !== null && !state.recent.some(function (r) { return r.timestamp === state.selected; })) {
                 state.selected = null;
             }
             state.loaded = true;
@@ -949,7 +1077,7 @@
 
     function refreshAgo() {
         if ($("statusPill").getAttribute("data-state") === "offline") return;
-        var last = state.history[state.history.length - 1];
+        var last = state.recent[state.recent.length - 1];
         $("statusWord").textContent = last ? t("live") + " \u00b7 " : "";
         $("statusText").textContent = last ? agoText(last.timestamp) : t("waitingData");
     }
@@ -957,17 +1085,44 @@
     /* ---------- render ---------- */
 
     function render() {
-        var rows = slice();
-        var latest = state.history[state.history.length - 1] || null;
+        var rows = state.series;
 
-        renderHero(latest);
+        renderHero(state.recent[state.recent.length - 1] || null);
         renderCamera();
         renderStrip();
         renderKpis(rows);
         renderTable(rows);
         renderChart(rows);
+        renderRangeLabel();
+    }
 
-        $("trendSub").textContent = t("trendSub", { h: state.rangeHours });
+    function renderRangeLabel() {
+        var bounds = rangeBounds();
+        var label = state.from
+            ? dayLabel(bounds.from) + " \u2013 " + dayLabel(bounds.to)
+            : t("rangeLast", { r: presetLabel(state.rangeDays) });
+
+        // Say so when points are averages rather than single readings, so a
+        // flattened line is never mistaken for a calm river.
+        $("trendSub").textContent = state.bucket > 300
+            ? label + " \u00b7 " + t("averagedEvery", { d: bucketLabel(state.bucket) })
+            : label + " \u00b7 " + t("everyFiveMin");
+    }
+
+    function presetLabel(days) {
+        if (days <= 1) return t("preset24h");
+        if (days >= 92) return "3 " + t("months");
+        return plural(days, "day");
+    }
+
+    function bucketLabel(sec) {
+        if (sec >= DAY) return plural(sec / DAY, "day");
+        if (sec >= 3600) return plural(sec / 3600, "hour");
+        return plural(sec / 60, "minute");
+    }
+
+    function plural(count, unit) {
+        return count + " " + t(count === 1 ? unit : unit + "s");
     }
 
     function renderHero(latest) {
@@ -976,7 +1131,7 @@
         $("heroValue").textContent = latest.level.toFixed(2);
         $("heroTime").textContent = fullTime(latest.timestamp);
 
-        var prev = state.history[state.history.length - 2];
+        var prev = state.recent[state.recent.length - 2];
         var delta = $("delta");
         if (prev) {
             var d = latest.level - prev.level;
@@ -1002,11 +1157,11 @@
     }
 
     function shownShot() {
-        if (state.selected === null) return state.history[state.history.length - 1] || null;
-        for (var i = 0; i < state.history.length; i++) {
-            if (state.history[i].timestamp === state.selected) return state.history[i];
+        if (state.selected === null) return state.recent[state.recent.length - 1] || null;
+        for (var i = 0; i < state.recent.length; i++) {
+            if (state.recent[i].timestamp === state.selected) return state.recent[i];
         }
-        return state.history[state.history.length - 1] || null;
+        return state.recent[state.recent.length - 1] || null;
     }
 
     function renderCamera() {
@@ -1026,7 +1181,7 @@
             placeWaterline(shot);
         }
 
-        var isLatest = shot === state.history[state.history.length - 1];
+        var isLatest = shot === state.recent[state.recent.length - 1];
         $("camCaption").textContent = (isLatest ? t("latest") + " \u00b7 " : "") +
             clockTime(shot.timestamp) + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
     }
@@ -1046,7 +1201,7 @@
 
     function renderStrip() {
         var strip = $("strip");
-        var recent = state.history.slice(-12).reverse();
+        var recent = state.recent.slice(-12).reverse();
         var shown = shownShot();
         strip.textContent = "";
 
@@ -1068,7 +1223,7 @@
             btn.appendChild(img);
             btn.appendChild(label);
             btn.addEventListener("click", function () {
-                var isLatest = shot === state.history[state.history.length - 1];
+                var isLatest = shot === state.recent[state.recent.length - 1];
                 state.selected = isLatest ? null : shot.timestamp;
                 renderCamera();
                 renderStrip();
@@ -1082,8 +1237,12 @@
         var levels = rows.map(function (r) { return r.level; });
         var sum = levels.reduce(function (a, b) { return a + b; }, 0);
 
-        $("kpiHigh").textContent = Math.max.apply(null, levels).toFixed(2);
-        $("kpiLow").textContent = Math.min.apply(null, levels).toFixed(2);
+        $("kpiHigh").textContent = Math.max.apply(null, rows.map(function (r) {
+            return typeof r.high === "number" ? r.high : r.level;
+        })).toFixed(2);
+        $("kpiLow").textContent = Math.min.apply(null, rows.map(function (r) {
+            return typeof r.low === "number" ? r.low : r.level;
+        })).toFixed(2);
         $("kpiAvg").textContent = (sum / levels.length).toFixed(2);
         $("kpiChange").textContent = signed(levels[levels.length - 1] - levels[0]);
     }
@@ -1214,7 +1373,7 @@
             return;
         }
 
-        var labels = rows.map(function (r) { return clockTime(r.timestamp); });
+        var labels = rows.map(function (r) { return axisLabel(r.timestamp); });
         var data = rows.map(function (r) { return r.level; });
         var bounds = axisBounds(Math.min.apply(null, data), Math.max.apply(null, data));
 
@@ -1307,13 +1466,62 @@
     /* ---------- controls ---------- */
 
     $("rangeControl").addEventListener("click", function (e) {
-        var btn = e.target.closest("button[data-hours]");
+        var btn = e.target.closest("button[data-days], button[data-custom]");
         if (!btn) return;
-        state.rangeHours = Number(btn.dataset.hours);
-        Array.prototype.forEach.call(this.querySelectorAll("button"), function (b) {
+
+        each(this.querySelectorAll("button"), function (b) {
             b.setAttribute("aria-pressed", String(b === btn));
         });
-        render();
+
+        var custom = btn.hasAttribute("data-custom");
+        $("customRange").classList.toggle("is-shown", custom);
+
+        if (custom) {
+            prefillCustomRange();
+            return;
+        }
+
+        state.from = null;
+        state.to = null;
+        state.rangeDays = Number(btn.dataset.days);
+        load();
+    });
+
+    function toInputDate(ts) {
+        var d = new Date(ts * 1000);
+        return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    }
+
+    function prefillCustomRange() {
+        var bounds = rangeBounds();
+        var now = Math.floor(Date.now() / 1000);
+        $("rangeFrom").value = toInputDate(bounds.from);
+        $("rangeTo").value = toInputDate(bounds.to);
+        $("rangeFrom").min = $("rangeTo").min = toInputDate(now - MAX_AGE_DAYS * DAY);
+        $("rangeFrom").max = $("rangeTo").max = toInputDate(now);
+        note(t("rangeHint", { d: MAX_RANGE_DAYS }), false);
+    }
+
+    function note(text, isError) {
+        var el = $("rangeNote");
+        el.textContent = text;
+        el.classList.toggle("is-error", !!isError);
+    }
+
+    $("rangeApply").addEventListener("click", function () {
+        var from = Date.parse($("rangeFrom").value + "T00:00:00") / 1000;
+        var to = Date.parse($("rangeTo").value + "T23:59:59") / 1000;
+        var now = Math.floor(Date.now() / 1000);
+
+        if (!isFinite(from) || !isFinite(to)) return note(t("rangeInvalid"), true);
+        if (from >= to) return note(t("rangeOrder"), true);
+        if (to - from > MAX_RANGE_DAYS * DAY) return note(t("rangeTooLong", { d: MAX_RANGE_DAYS }), true);
+        if (now - from > MAX_AGE_DAYS * DAY) return note(t("rangeTooOld", { d: MAX_AGE_DAYS }), true);
+
+        state.from = Math.floor(from);
+        state.to = Math.min(Math.floor(to), now);
+        note(t("rangeHint", { d: MAX_RANGE_DAYS }), false);
+        load();
     });
 
     applyLang();
