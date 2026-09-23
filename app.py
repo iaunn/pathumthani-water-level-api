@@ -87,12 +87,17 @@ def background_tracker(station):
             load_calibration(station)
             video_url = get_video_url(station)
             if video_url:
-                frame = capture_last_frame_from_video(video_url)
+                # Several frames, not one: still water mirrors the staff, and only
+                # the reflection moves between them.
+                segment = capture_frames_from_video(video_url)
+                frame = segment[-1] if segment else capture_last_frame_from_video(video_url)
                 if frame is not None:
                     with station.lock:
                         aligned_frame = align_image(station, frame)
+                        aligned_segment = [align_image(station, f) for f in segment] or None
                         raw_y = detect_water_level_on_gauge(
-                            aligned_frame, station.x_start, station.x_end)
+                            aligned_frame, station.x_start, station.x_end,
+                            frames=aligned_segment)
                         if raw_y is None:
                             raw_y = detect_yellow_regions_fused(
                                 aligned_frame, station.x_start, station.x_end)
@@ -644,8 +649,78 @@ def detect_yellow_regions_fused(image, x_start=225, x_end=390):
     
     return None
 
-def detect_water_level_on_gauge(image, x_start=225, x_end=390,
-                                texture_drop=0.5, sustain_rows=9):
+def _smooth(values, window=5):
+    return np.convolve(values, np.ones(window) / window, mode="same")
+
+
+def _yellow_column(image, x_start, x_end):
+    """Locate the staff by its yellow paint, and say which of its rows are lit."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))
+    mask[:, :x_start] = 0
+    mask[:, x_end:] = 0
+
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 50:
+        return None
+
+    left, right = int(np.percentile(xs, 5)), int(np.percentile(xs, 95))
+    if right - left < 6:
+        left, right = max(0, left - 4), right + 4
+    return left, right, int(ys.min()), int(np.percentile(ys, 90))
+
+
+def _banding_column(image, x_start, x_end):
+    """
+    Locate the staff without relying on colour.
+
+    Not every gauge is yellow -- one of these rivers is measured against a red
+    and white staff -- but they all carry graduation bands, so the staff is the
+    column with the most horizontal edges, and it is the longest unbroken run of
+    them: masonry above the staff is textured too, but only in patches.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, x_start:x_end + 1]
+    edges = _smooth(np.percentile(np.abs(np.diff(gray, axis=0)), 90, axis=0), 3)
+    if edges.max() <= 0:
+        return None
+
+    cols = np.nonzero(edges >= edges.max() * 0.5)[0]
+    if len(cols) == 0:
+        return None
+
+    runs = []
+    start = prev = cols[0]
+    for c in cols[1:]:
+        if c - prev > 2:
+            runs.append((start, prev))
+            start = c
+        prev = c
+    runs.append((start, prev))
+    a, b = max(runs, key=lambda r: r[1] - r[0])
+    left, right = x_start + a, x_start + b
+
+    strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
+    contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
+    lit = np.nonzero(contrast >= contrast.max() * 0.45)[0]
+    if len(lit) < 20:
+        return None
+
+    runs = []
+    start = prev = lit[0]
+    for y in lit[1:]:
+        if y - prev > 12:
+            runs.append((start, prev))
+            start = y
+        prev = y
+    runs.append((start, prev))
+    top, bottom = max(runs, key=lambda r: r[1] - r[0])
+    if bottom - top < 40:
+        return None
+    return left, right, int(top), int(top + (bottom - top) * 0.6)
+
+
+def detect_water_level_on_gauge(image, x_start=225, x_end=390, frames=None,
+                                texture_drop=0.5, sustain_rows=9, motion_ratio=3.0):
     """
     Find the waterline by where the gauge staff stops looking like a gauge staff.
 
@@ -656,39 +731,35 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390,
     own reflection to the bottom of the frame.
 
     What separates the two cleanly is texture: the staff carries black graduation
-    bands, so each of its rows spans a wide range of brightness, while water and
-    reflection are smooth. That range collapses at the waterline -- measured at
-    121 to 47 on one frame and 68 to 42 on another, both exactly at the surface.
-    The collapse is read relative to the staff's own rows, so it holds up as the
-    light changes through the day.
+    bands, so each of its rows spans a wide range of brightness, while water is
+    smooth. That range collapses at the waterline -- measured at 121 to 47 on one
+    frame and 68 to 42 on another, both exactly at the surface -- and is read
+    relative to the staff's own rows, so it holds as the light changes.
+
+    Where the water is still enough to mirror the staff the texture does not
+    collapse at all: the reflection measured 77-84% of the staff's contrast well
+    below the surface, and no threshold separates them. Pass `frames` from the
+    same segment and the reflection gives itself away by moving. The staff is
+    static, so its rows vary by 0 across frames while the water below varies by
+    9; the correction only applies where that gap is real, and is inert on the
+    muddy rivers that never reflect.
     """
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-    # The strict mask is a poor waterline but a reliable way to locate the staff.
-    staff_mask = cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))
-    staff_mask[:, :x_start] = 0
-    staff_mask[:, x_end:] = 0
-
-    ys, xs = np.nonzero(staff_mask)
-    if len(xs) < 50:
+    column = _yellow_column(image, x_start, x_end) or _banding_column(image, x_start, x_end)
+    if column is None:
         return None
+    left, right, top, ref_end = column
 
-    left, right = int(np.percentile(xs, 5)), int(np.percentile(xs, 95))
-    if right - left < 6:
-        left, right = max(0, left - 4), right + 4
+    strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
+    contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
 
-    column = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)[:, left:right + 1].astype(int)
-    contrast = np.convolve(column.max(axis=1) - column.min(axis=1),
-                           np.ones(5) / 5, mode="same")
-
-    top = int(ys.min())
-    reference = np.median(contrast[top:max(top + 40, int(np.percentile(ys, 90)))])
+    reference = np.median(contrast[top:max(top + 40, ref_end)])
     if reference <= 0:
         return None
 
     threshold = reference * texture_drop
     waterline = None
     below = 0
+    collapsed = False
     for y in range(top, len(contrast)):
         if contrast[y] >= threshold:
             waterline = y
@@ -697,9 +768,47 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390,
             below += 1
             # A few dim rows are just a wide black band; a sustained run is water.
             if waterline is not None and below >= sustain_rows:
+                collapsed = True
                 break
 
+    # Reaching the bottom with the staff never giving out means no waterline was
+    # found -- a dark frame, or a gauge that leaves the picture. Report nothing
+    # rather than the last row scanned.
+    if not collapsed:
+        return None
+
+    if waterline is None or not frames:
+        return waterline
+
+    return _correct_for_reflection(frames, left, right, top, waterline, motion_ratio)
+
+
+def _correct_for_reflection(frames, left, right, top, waterline, motion_ratio):
+    """Pull the waterline back up out of a mirror image, using the fact that only
+    the water moves between frames."""
+    stack = np.stack([
+        cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1] for f in frames
+    ])
+    motion = _smooth(stack.std(axis=0).mean(axis=1))
+
+    static = np.median(motion[top:max(top + 40, waterline - 150)])
+    low, high = max(0, waterline - 80), min(len(motion), waterline + 80)
+    moving = np.median(motion[low:high])
+
+    if moving <= max(static, 0.05) * motion_ratio:
+        return waterline   # nothing is rippling; there is no reflection to undo
+
+    cut = (static + moving) / 2
+    run = 0
+    for y in range(top, waterline + 1):
+        if motion[y] > cut:
+            run += 1
+            if run >= 6:
+                return max(top, y - 5)
+        else:
+            run = 0
     return waterline
+
 
 def detect_yellow_region_fused(image, x_start=225, x_end=390):
     """Enhanced yellow detection with specialized water level detection."""
@@ -908,6 +1017,27 @@ def draw_reference_ticks(station, image, y_detected):
         cv2.putText(image, f"{lvl:.1f}m", (image.shape[1]-150, max(15, y-5)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         lvl -= 0.1
+
+def capture_frames_from_video(video_url, count=10):
+    """A handful of frames spread across the segment, for telling water from a
+    reflection. Returns [] rather than raising if the segment will not open."""
+    cap = cv2.VideoCapture(video_url)
+    if not cap.isOpened():
+        return []
+
+    frames = []
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames.append(frame)
+    cap.release()
+
+    if len(frames) <= count:
+        return frames
+    step = len(frames) // count
+    return frames[::step][:count]
+
 
 def capture_last_frame_from_video(video_url):
     """Capture the last frame from the video segment with robust error handling."""

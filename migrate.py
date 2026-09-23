@@ -19,6 +19,7 @@ load_dotenv()
 
 import database
 import stations
+import storage
 
 CALIBRATION_FILE = "calibration.json"
 
@@ -62,14 +63,40 @@ def adopt_unassigned(station_id):
         print(f"{station_id}: moved {name} across.")
 
 
+def adopt_reference_frame(station_id):
+    """
+    Move the single-site homography baseline under the station's key.
+
+    Without this the app finds nothing at reference/<station>.jpg and quietly
+    adopts a fresh baseline. Every frame is aligned to that baseline before the
+    waterline is read, and the calibration was tuned against the old one, so the
+    readings would shift.
+    """
+    legacy = "reference/reference_frame.jpg"
+
+    if storage.download_frame(f"reference/{station_id}.jpg") is not None:
+        print(f"{station_id}: reference frame already in place, leaving it alone.")
+        return
+
+    frame = storage.download_frame(legacy)
+    if frame is None:
+        print(f"{station_id}: no {legacy} to move.")
+        return
+
+    storage.upload_frame(frame, f"reference/{station_id}.jpg")
+    print(f"{station_id}: copied {legacy} to reference/{station_id}.jpg.")
+
+
 def main():
     stations.load()
+    storage.init()
     database.init()
 
     target = stations.default_id()
     print(f"Migrating pre-existing data into station '{target}'.")
 
     adopt_unassigned(target)
+    adopt_reference_frame(target)
     import_calibration_file(target)
     return 0
 
