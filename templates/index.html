@@ -154,6 +154,37 @@
         100% { transform: scale(1.5); opacity: 0; }
     }
 
+    .station-switch {
+        display: inline-flex;
+        padding: 3px;
+        gap: 2px;
+        background: var(--wash);
+        border-radius: 999px;
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    .station-switch a {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ink-2);
+        text-decoration: none;
+        padding: 5px 14px;
+        border-radius: 999px;
+        white-space: nowrap;
+        transition: background .15s ease, color .15s ease;
+    }
+    .station-switch a:hover { color: var(--ink); }
+    .station-switch a[aria-current="page"] {
+        background: var(--surface);
+        color: var(--ink);
+        font-weight: 600;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+    }
+    @media (max-width: 760px) { .station-switch { display: none; } }
+    .station-switch-mobile { display: none; margin-bottom: 18px; }
+    @media (max-width: 760px) { .station-switch-mobile { display: block; } }
+    .station-switch-mobile .station-switch { display: inline-flex; }
+
     .lang-switch {
         display: inline-flex;
         padding: 2px;
@@ -572,16 +603,18 @@
     }
 </style>
 </head>
-<body>
+<body data-station="{{ station_id }}">
 
 <header class="topbar">
     <div class="brand">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z"/>
         </svg>
-        <span class="brand-name" data-i18n="brandName">Pathumthani Water Level</span>
-        <span class="brand-sub" data-i18n="brandSub">· River gauge monitor</span>
+        <span class="brand-name" data-i18n="brandName">River Water Level</span>
+        <span class="brand-sub" id="stationName"></span>
     </div>
+
+    <nav class="station-switch" id="stationSwitch" aria-label="Station"></nav>
     <div class="topbar-right">
         <span class="status-pill" id="statusPill" data-state="loading">
             <span class="status-dot"></span>
@@ -604,6 +637,10 @@
 </header>
 
 <main class="page">
+
+    <div class="station-switch-mobile">
+        <nav class="station-switch" id="stationSwitchMobile" aria-label="Station"></nav>
+    </div>
 
     <div class="notice" id="notice" role="status">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -744,6 +781,9 @@
     "use strict";
 
     var REFRESH_MS = 300000;
+    var STATION = document.body.dataset.station || "";
+    var API = "/api/" + STATION;
+
     var DAY = 86400;
     var MAX_RANGE_DAYS = 92;   // one view spans at most three months
     var MAX_AGE_DAYS = 1095;   // ...anywhere inside three years of history
@@ -756,6 +796,7 @@
         from: null,       // set only for a custom range
         to: null,
         gauge: null,
+        stations: [],
         markers: [],
         showMarkers: true,
         selected: null,
@@ -792,7 +833,7 @@
 
     var I18N = {
         en: {
-            brandName: "Pathumthani Water Level",
+            brandName: "River Water Level",
             brandSub: "\u00b7 River gauge monitor",
             language: "Language",
             themeToggle: "Toggle dark mode",
@@ -856,7 +897,7 @@
             gaugeAt: "Gauge at {t}"
         },
         th: {
-            brandName: "\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33\u0e1b\u0e17\u0e38\u0e21\u0e18\u0e32\u0e19\u0e35",
+            brandName: "\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33\u0e41\u0e21\u0e48\u0e19\u0e49\u0e33",
             brandSub: "\u00b7 \u0e23\u0e30\u0e1a\u0e1a\u0e15\u0e34\u0e14\u0e15\u0e32\u0e21\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33",
             language: "\u0e20\u0e32\u0e29\u0e32",
             themeToggle: "\u0e2a\u0e25\u0e31\u0e1a\u0e42\u0e2b\u0e21\u0e14\u0e21\u0e37\u0e14",
@@ -947,6 +988,7 @@
         each(document.querySelectorAll("[data-i18n]"), function (el) {
             el.textContent = t(el.getAttribute("data-i18n"));
         });
+        renderStations();
         each(document.querySelectorAll("[data-i18n-aria]"), function (el) {
             el.setAttribute("aria-label", t(el.getAttribute("data-i18n-aria")));
         });
@@ -1068,10 +1110,10 @@
 
         var bounds = rangeBounds();
         var jobs = [
-            fetchJson("/api/recent"),
-            fetchJson("/api/history?from=" + bounds.from + "&to=" + bounds.to)
+            fetchJson(API + "/recent"),
+            fetchJson(API + "/history?from=" + bounds.from + "&to=" + bounds.to)
         ];
-        if (!state.gauge) jobs.push(fetchJson("/api/calibration"), fetchJson("/api/markers"));
+        if (!state.gauge) jobs.push(fetchJson(API + "/calibration"), fetchJson(API + "/markers"));
 
         return Promise.all(jobs).then(function (res) {
             state.recent = (Array.isArray(res[0]) ? res[0] : []).filter(function (r) {
@@ -1140,6 +1182,30 @@
         renderTable(rows);
         renderChart(rows);
         renderRangeLabel();
+        renderStations();
+    }
+
+    function renderStations() {
+        var current = null;
+        state.stations.forEach(function (st) { if (st.id === STATION) current = st; });
+        $("stationName").textContent = current ? "\u00b7 " + stationName(current) : "";
+
+        [$("stationSwitch"), $("stationSwitchMobile")].forEach(function (nav) {
+            nav.textContent = "";
+            // A station switch with one station is just noise.
+            if (state.stations.length < 2) return;
+            state.stations.forEach(function (st) {
+                var a = document.createElement("a");
+                a.href = "/s/" + st.id;
+                a.textContent = stationName(st);
+                if (st.id === STATION) a.setAttribute("aria-current", "page");
+                nav.appendChild(a);
+            });
+        });
+    }
+
+    function stationName(st) {
+        return (st.name && (st.name[lang] || st.name.en)) || st.id;
     }
 
     function renderRangeLabel() {
@@ -1654,6 +1720,11 @@
         note(t("rangeHint", { d: MAX_RANGE_DAYS }), false);
         load();
     });
+
+    fetchJson("/api/stations").then(function (data) {
+        state.stations = (data && data.stations) || [];
+        renderStations();
+    }).catch(function (e) { console.error(e); });
 
     applyLang();
     load();

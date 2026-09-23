@@ -4,8 +4,6 @@ import os
 from datetime import datetime, timezone
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
-CALIBRATION_ID = "current"
-MARKERS_ID = "current"
 
 # Reference lines are drawn from a fixed palette rather than free colours, so the
 # chart keeps a consistent reading of severity across the whole dashboard.
@@ -35,16 +33,18 @@ def init():
     _calibration = db["calibration"]
     _markers = db["markers"]
 
-    _readings.create_index([("timestamp", DESCENDING)])
+    # Every query is scoped to one station, so the station leads the index.
+    _readings.create_index([("station", ASCENDING), ("timestamp", DESCENDING)])
 
     print(f"MongoDB ready: database={db.name}")
 
 
-def add_reading(timestamp, level, image_url, y):
+def add_reading(station_id, timestamp, level, image_url, y):
     timestamp = int(timestamp)
     level = round(float(level), 2)
 
     _readings.insert_one({
+        "station": station_id,
         "timestamp": timestamp,
         "level": level,
         "image_url": image_url,
@@ -53,10 +53,10 @@ def add_reading(timestamp, level, image_url, y):
     })
 
 
-def latest_readings(limit):
+def latest_readings(station_id, limit):
     """Newest raw readings, oldest-first. Feeds the current value and the capture strip."""
     docs = _readings.find(
-        {}, {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1}
+        {"station": station_id}, {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1}
     ).sort("timestamp", DESCENDING).limit(limit)
     return sorted(docs, key=lambda d: d["timestamp"])
 
@@ -73,7 +73,7 @@ def _bucket_for(span_seconds, target_points):
     return _BUCKETS[-1]
 
 
-def history_series(start_ts, end_ts, target_points=800):
+def history_series(station_id, start_ts, end_ts, target_points=800):
     """
     Level over a time range, averaged into buckets when the span is long.
 
@@ -84,7 +84,8 @@ def history_series(start_ts, end_ts, target_points=800):
     bucket = _bucket_for(max(1, end_ts - start_ts), target_points)
 
     points = list(_readings.aggregate([
-        {"$match": {"timestamp": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
+        {"$match": {"station": station_id,
+                    "timestamp": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
         {"$group": {
             "_id": {"$subtract": ["$timestamp", {"$mod": ["$timestamp", bucket]}]},
             "level": {"$avg": "$level"},
@@ -105,37 +106,38 @@ def history_series(start_ts, end_ts, target_points=800):
     }
 
 
-def prune_readings(retention_days):
+def prune_readings(station_id, retention_days):
     """Drop readings past the retention window."""
     cutoff = int(datetime.now(timezone.utc).timestamp()) - retention_days * 86400
-    return _readings.delete_many({"timestamp": {"$lt": cutoff}}).deleted_count
+    return _readings.delete_many({"station": station_id,
+                                  "timestamp": {"$lt": cutoff}}).deleted_count
 
 
-def load_calibration_points():
-    doc = _calibration.find_one({"_id": CALIBRATION_ID})
+def load_calibration_points(station_id):
+    doc = _calibration.find_one({"_id": station_id})
     if not doc:
         return []
     return [tuple(p) for p in doc.get("points", [])]
 
 
-def load_markers():
-    doc = _markers.find_one({"_id": MARKERS_ID})
+def load_markers(station_id):
+    doc = _markers.find_one({"_id": station_id})
     if not doc:
         return []
     return doc.get("markers", [])
 
 
-def save_markers(markers):
+def save_markers(station_id, markers):
     _markers.update_one(
-        {"_id": MARKERS_ID},
+        {"_id": station_id},
         {"$set": {"markers": markers, "updated_at": datetime.now(timezone.utc)}},
         upsert=True,
     )
 
 
-def save_calibration_points(points):
+def save_calibration_points(station_id, points):
     _calibration.update_one(
-        {"_id": CALIBRATION_ID},
+        {"_id": station_id},
         {"$set": {
             "points": [[int(p[0]), float(p[1])] for p in points],
             "updated_at": datetime.now(timezone.utc),

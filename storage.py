@@ -6,9 +6,6 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-CAPTURE_PREFIX = "captures/"
-REFERENCE_KEY = "reference/reference_frame.jpg"
-
 _bucket = None
 _public_base = None
 _client = None
@@ -86,11 +83,11 @@ def download_frame(key):
     return frame
 
 
-def prune_captures(keep):
-    """Delete all but the newest `keep` captures."""
+def prune_captures(prefix, keep):
+    """Delete all but the newest `keep` captures under one station's prefix."""
     paginator = _client.get_paginator("list_objects_v2")
     objects = []
-    for page in paginator.paginate(Bucket=_bucket, Prefix=CAPTURE_PREFIX):
+    for page in paginator.paginate(Bucket=_bucket, Prefix=prefix):
         objects.extend(page.get("Contents", []))
 
     if len(objects) <= keep:
@@ -105,5 +102,5 @@ def prune_captures(keep):
         _client.delete_objects(Bucket=_bucket, Delete={"Objects": batch})
         deleted += len(batch)
 
-    print(f"Pruned {deleted} old captures, keeping {keep}")
+    print(f"Pruned {deleted} old captures under {prefix}, keeping {keep}")
     return deleted

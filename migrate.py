@@ -1,8 +1,10 @@
-"""One-off import of the pre-cloud local state into MongoDB.
+"""One-off migrations for data written by an earlier version.
 
-Only calibration is worth moving: it is hand-tuned and hard to reproduce, whereas
-history.json regenerates within a day and its captures live on a disk the app no
-longer reads. Run once against the target database, then delete the local files.
+Run once against the target database; both steps are safe to repeat.
+
+  1. Import calibration.json, from before calibration moved into MongoDB.
+  2. Attach existing single-site data to a station, from before the app tracked
+     more than one river.
 
     python migrate.py
 """
@@ -16,31 +18,59 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import database
+import stations
 
 CALIBRATION_FILE = "calibration.json"
 
 
-def main():
+def import_calibration_file(station_id):
     if not os.path.exists(CALIBRATION_FILE):
-        print(f"No {CALIBRATION_FILE} to import.")
-        return 0
+        return
 
     with open(CALIBRATION_FILE) as f:
         points = json.load(f).get("points", [])
-
     if not points:
-        print(f"{CALIBRATION_FILE} has no points.")
-        return 0
+        return
 
+    if database.load_calibration_points(station_id):
+        print(f"{station_id}: calibration already in MongoDB, leaving it alone.")
+        return
+
+    database.save_calibration_points(station_id, points)
+    print(f"{station_id}: imported {len(points)} calibration points from {CALIBRATION_FILE}.")
+
+
+def adopt_unassigned(station_id):
+    """Claim the pre-multi-station documents for `station_id`."""
+    readings = database._readings.update_many(
+        {"station": {"$exists": False}}, {"$set": {"station": station_id}}
+    ).modified_count
+    if readings:
+        print(f"{station_id}: tagged {readings} readings.")
+
+    # Calibration and markers used to live under a single "current" document.
+    for name, collection in (("calibration", database._calibration), ("markers", database._markers)):
+        legacy = collection.find_one({"_id": "current"})
+        if not legacy:
+            continue
+        if collection.find_one({"_id": station_id}):
+            print(f"{station_id}: {name} already present, leaving the legacy document in place.")
+            continue
+        legacy["_id"] = station_id
+        collection.insert_one(legacy)
+        collection.delete_one({"_id": "current"})
+        print(f"{station_id}: moved {name} across.")
+
+
+def main():
+    stations.load()
     database.init()
 
-    existing = database.load_calibration_points()
-    if existing:
-        print(f"Calibration already in MongoDB ({len(existing)} points). Refusing to overwrite.")
-        return 1
+    target = stations.default_id()
+    print(f"Migrating pre-existing data into station '{target}'.")
 
-    database.save_calibration_points(points)
-    print(f"Imported {len(points)} calibration points into MongoDB.")
+    adopt_unassigned(target)
+    import_calibration_file(target)
     return 0
 
 

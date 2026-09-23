@@ -11,12 +11,13 @@ import warnings
 import json
 import threading
 import time
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, abort
 from datetime import datetime
 from flask_caching import Cache
 
 import storage
 import database
+import stations
 
 # Suppress OpenCV warnings and H.264 decoder warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -36,16 +37,10 @@ MAX_KEEP = int(os.getenv("MAX_KEEP_IMAGES", 200))
 
 storage.init()
 database.init()
+stations.load()
 
 # Base URL for fetching HLS playlist
-base_url = "http://101.109.253.60:8999/"
-playlist_url = base_url + "playlist.m3u8"
-
-# Initialize previous water level
-previous_water_level = 0.0
-
-# Detection smoothing buffers
-detection_history = []  # Store last 5 detections
+# Detection smoothing window, kept per station
 MAX_HISTORY = 5
 
 # =========================
@@ -53,24 +48,19 @@ MAX_HISTORY = 5
 # =========================
 # Pixel is measured from top of the image (y increases downward)
 # Ensure points are sorted by pixel (descending level with increasing pixel)
-CAL_POINTS = []
-
-def load_calibration():
-    global CAL_POINTS
+def load_calibration(station):
     try:
-        CAL_POINTS = sorted(database.load_calibration_points(), key=lambda x: x[0])
+        station.cal_points = sorted(database.load_calibration_points(station.id), key=lambda x: x[0])
     except Exception as e:
-        print(f"Error loading calibration: {e}")
+        print(f"Error loading calibration for {station.id}: {e}")
 
-def save_calibration_to_file(points):
+def save_calibration_to_file(station, points):
     try:
-        database.save_calibration_points(points)
+        database.save_calibration_points(station.id, points)
         return True
     except Exception as e:
-        print(f"Error saving calibration: {e}")
+        print(f"Error saving calibration for {station.id}: {e}")
         return False
-
-load_calibration()
 
 # =========================
 # History Tracking
@@ -88,72 +78,73 @@ MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", 92))
 # How many raw captures the dashboard's strip and current reading need.
 RECENT_LIMIT = 24
 
-def background_tracker():
-    """Runs every 5 minutes to capture and record the water level."""
+def background_tracker(station):
+    """Runs every 5 minutes to capture and record one station's water level."""
     while True:
         try:
-            print("Running background water level check...")
+            print(f"[{station.id}] running background water level check...")
             # picks up calibration saved by another replica
-            load_calibration()
-            video_url = get_video_url()
+            load_calibration(station)
+            video_url = get_video_url(station)
             if video_url:
                 frame = capture_last_frame_from_video(video_url)
                 if frame is not None:
-                    aligned_frame = align_image(frame)
-                    raw_y = detect_water_level_on_gauge(aligned_frame)
-                    if raw_y is None:
-                        raw_y = detect_yellow_regions_fused(aligned_frame)
-                    
-                    y = smooth_detection(raw_y)
-                    
+                    with station.lock:
+                        aligned_frame = align_image(station, frame)
+                        raw_y = detect_water_level_on_gauge(
+                            aligned_frame, station.x_start, station.x_end)
+                        if raw_y is None:
+                            raw_y = detect_yellow_regions_fused(
+                                aligned_frame, station.x_start, station.x_end)
+
+                        y = smooth_detection(station, raw_y)
+
                     if y is not None:
-                        level = float(pixel_to_level(float(y)))
-                        
+                        level = float(pixel_to_level(station, float(y)))
+
                         timestamp = int(time.time())
-                        image_url = store_frame(aligned_frame, "history", f"_{timestamp}")
+                        image_url = store_frame(station, aligned_frame, "history", f"_{timestamp}")
 
                         # "y" lets the dashboard draw the detected waterline over
                         # the frame, so a wrong reading is visible rather than implied.
-                        database.add_reading(timestamp, level, image_url, y)
-                        database.prune_readings(RETENTION_DAYS)
-                        rotate_images()
-                        print(f"Background check successful. Level: {level:.2f}m")
+                        database.add_reading(station.id, timestamp, level, image_url, y)
+                        database.prune_readings(station.id, RETENTION_DAYS)
+                        rotate_images(station)
+                        print(f"[{station.id}] check successful. Level: {level:.2f}m")
         except Exception as e:
-            print(f"Background tracker error: {e}")
-            
+            # One station's camera going down must not stop the others.
+            print(f"[{station.id}] background tracker error: {e}")
+
         time.sleep(300) # Wait 5 minutes
 
 # Useful bounds
-def get_bounds():
-    if CAL_POINTS:
-        return CAL_POINTS[0], CAL_POINTS[-1]
+def get_bounds(station):
+    if station.cal_points:
+        return station.cal_points[0], station.cal_points[-1]
     return (0, 0), (0, 0)
 
-PIX_MIN, LVL_MAX = get_bounds()[0]
-PIX_MAX, LVL_MIN = get_bounds()[1]
-
-def pixel_to_level(y: float) -> float:
+def pixel_to_level(station, y: float) -> float:
     """
     Piecewise-linear interpolation from pixel (y, from top) to water level (m).
     Extrapolates using the nearest segment if y is outside calibration range.
     """
     # exact match
-    for py, lv in CAL_POINTS:
+    for py, lv in station.cal_points:
         if y == py:
             return lv
 
     # choose segment
-    if y < CAL_POINTS[0][0]:
+    if y < station.cal_points[0][0]:
         # above top point -> extrapolate using first segment
-        (x1, y1), (x2, y2) = CAL_POINTS[0], CAL_POINTS[1]
-    elif y > CAL_POINTS[-1][0]:
+        (x1, y1), (x2, y2) = station.cal_points[0], station.cal_points[1]
+    elif y > station.cal_points[-1][0]:
         # below bottom point -> extrapolate using last segment
-        (x1, y1), (x2, y2) = CAL_POINTS[-2], CAL_POINTS[-1]
+        (x1, y1), (x2, y2) = station.cal_points[-2], station.cal_points[-1]
     else:
         # find adjacent calibration points
-        for i in range(len(CAL_POINTS) - 1):
-            x1, y1 = CAL_POINTS[i]
-            x2, y2 = CAL_POINTS[i + 1]
+        for i in range(len(station.cal_points) - 1):
+            x1, y1 = station.cal_points[i]
+            x2, y2 = station.cal_points[i + 1]
             if x1 <= y <= x2:
                 break
 
@@ -164,26 +155,26 @@ def pixel_to_level(y: float) -> float:
     t = (y - x1) / (x2 - x1)
     return y1 + (y2 - y1) * t
 
-def level_to_pixel(level_m: float) -> float:
+def level_to_pixel(station, level_m: float) -> float:
     """
     Inverse mapping: given a level (m), return pixel y (from top).
     Piecewise-linear using the same calibration points.
     """
     # exact match
-    for py, lv in CAL_POINTS:
+    for py, lv in station.cal_points:
         if abs(level_m - lv) < 1e-9:
             return py
 
     # choose segment (levels decrease with pixel)
-    levels = [lv for _, lv in CAL_POINTS]
+    levels = [lv for _, lv in station.cal_points]
     if level_m > levels[0]:
-        (x1, y1), (x2, y2) = CAL_POINTS[0], CAL_POINTS[1]
+        (x1, y1), (x2, y2) = station.cal_points[0], station.cal_points[1]
     elif level_m < levels[-1]:
-        (x1, y1), (x2, y2) = CAL_POINTS[-2], CAL_POINTS[-1]
+        (x1, y1), (x2, y2) = station.cal_points[-2], station.cal_points[-1]
     else:
-        for i in range(len(CAL_POINTS) - 1):
-            x1, y1 = CAL_POINTS[i]
-            x2, y2 = CAL_POINTS[i + 1]
+        for i in range(len(station.cal_points) - 1):
+            x1, y1 = station.cal_points[i]
+            x2, y2 = station.cal_points[i + 1]
             # y1 >= level >= y2 in normal case
             if (y1 >= level_m >= y2) or (y1 <= level_m <= y2):
                 break
@@ -196,53 +187,46 @@ def level_to_pixel(level_m: float) -> float:
 # =========================
 # Homography Alignment
 # =========================
-reference_data = {"image": None, "keypoints": None, "descriptors": None}
-# Initialize ORB detector
-orb = cv2.ORB_create(nfeatures=2000)
-
-def _adopt_reference(frame):
-    """Hold `frame` in memory as the homography baseline."""
-    global reference_data
+def _adopt_reference(station, frame):
+    """Hold `frame` in memory as the station's homography baseline."""
     gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    kp, des = orb.detectAndCompute(gray_ref, None)
-    reference_data["image"] = frame.copy()
-    reference_data["keypoints"] = kp
-    reference_data["descriptors"] = des
+    kp, des = station.orb.detectAndCompute(gray_ref, None)
+    station.reference["image"] = frame.copy()
+    station.reference["keypoints"] = kp
+    station.reference["descriptors"] = des
 
-def set_reference_frame(frame):
+def set_reference_frame(station, frame):
     """Make `frame` the new homography baseline and persist it."""
-    _adopt_reference(frame)
-    storage.upload_frame(frame, storage.REFERENCE_KEY)
-    print("Stored new reference frame for homography.")
+    _adopt_reference(station, frame)
+    storage.upload_frame(frame, station.reference_key)
+    print(f"Stored new reference frame for {station.id}.")
     return True
 
-def init_reference_frame(frame):
+def init_reference_frame(station, frame):
     """Load the stored baseline, falling back to `frame` when there is none yet."""
-    stored = storage.download_frame(storage.REFERENCE_KEY)
+    stored = storage.download_frame(station.reference_key)
     if stored is not None:
-        _adopt_reference(stored)
-        print("Loaded reference frame for homography.")
+        _adopt_reference(station, stored)
+        print(f"Loaded reference frame for {station.id}.")
         return True
 
-    return set_reference_frame(frame)
+    return set_reference_frame(station, frame)
 
-def align_image(frame):
-    """Align the given frame to the reference frame using ORB feature matching."""
-    global reference_data
-    
-    if reference_data["image"] is None:
-        init_reference_frame(frame)
+def align_image(station, frame):
+    """Align the given frame to the station's reference frame using ORB feature matching."""
+    if station.reference["image"] is None:
+        init_reference_frame(station, frame)
         return frame # First frame is reference
         
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    kp_frame, des_frame = orb.detectAndCompute(gray_frame, None)
+    kp_frame, des_frame = station.orb.detectAndCompute(gray_frame, None)
     
-    if des_frame is None or reference_data["descriptors"] is None:
+    if des_frame is None or station.reference["descriptors"] is None:
         return frame
         
     # Match features
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = bf.match(reference_data["descriptors"], des_frame)
+    matches = bf.match(station.reference["descriptors"], des_frame)
     matches = sorted(matches, key=lambda x: x.distance)
     
     # Keep top matches
@@ -259,7 +243,7 @@ def align_image(frame):
     points2 = np.zeros((len(matches), 2), dtype=np.float32)
     
     for i, match in enumerate(matches):
-        points1[i, :] = reference_data["keypoints"][match.queryIdx].pt
+        points1[i, :] = station.reference["keypoints"][match.queryIdx].pt
         points2[i, :] = kp_frame[match.trainIdx].pt
         
     # Find homography
@@ -267,7 +251,7 @@ def align_image(frame):
     
     if h_matrix is not None:
         # Warp frame to align with reference
-        height, width, channels = reference_data["image"].shape
+        height, width, channels = station.reference["image"].shape
         aligned_frame = cv2.warpPerspective(frame, h_matrix, (width, height))
         print("Successfully aligned frame to reference.")
         return aligned_frame
@@ -291,30 +275,30 @@ def parse_hls_playlist(playlist_content):
             segments.append(line)
     return segments
 
-def get_video_url():
+def get_video_url(station):
     """Fetch the HLS playlist and get the last video segment URL."""
     try:
-        response = requests.get(playlist_url, timeout=10)
+        response = requests.get(station.playlist_url, timeout=10)
         if response.status_code == 200:
             segments = parse_hls_playlist(response.text)
             if segments:
                 last_segment = segments[-1]
-                return last_segment if last_segment.startswith('http') else base_url + last_segment
+                return last_segment if last_segment.startswith('http') else station.base_url + last_segment
     except requests.RequestException as e:
         print(f"Error fetching playlist: {e}")
     return None
 
-def get_video_segments():
+def get_video_segments(station):
     """Fetch the HLS playlist and return multiple recent video segments."""
     try:
-        response = requests.get(playlist_url, timeout=10)
+        response = requests.get(station.playlist_url, timeout=10)
         if response.status_code == 200:
             segments = parse_hls_playlist(response.text)
             if segments:
                 recent_segments = segments[-3:] if len(segments) >= 3 else segments
                 absolute_segments = []
                 for segment in recent_segments:
-                    absolute_segments.append(segment if segment.startswith('http') else base_url + segment)
+                    absolute_segments.append(segment if segment.startswith('http') else station.base_url + segment)
                 return absolute_segments
     except requests.RequestException as e:
         print(f"Error fetching playlist: {e}")
@@ -437,19 +421,14 @@ def detect_yellow_region_enhanced(image, x_start=225, x_end=390):
     
     return None
 
-def smooth_detection(raw_detection):
+def smooth_detection(station, raw_detection):
     """Apply temporal smoothing to reduce noise in detections."""
-    global detection_history
-    
-    # Add current detection to history
-    detection_history.append(raw_detection)
-    
-    # Keep only recent detections
-    if len(detection_history) > MAX_HISTORY:
-        detection_history = detection_history[-MAX_HISTORY:]
-    
-    # Remove invalid detections (None)
-    valid_detections = [d for d in detection_history if d is not None]
+    station.detection_history.append(raw_detection)
+
+    if len(station.detection_history) > MAX_HISTORY:
+        station.detection_history = station.detection_history[-MAX_HISTORY:]
+
+    valid_detections = [d for d in station.detection_history if d is not None]
     
     if len(valid_detections) < 2:
         return raw_detection
@@ -912,17 +891,18 @@ def detect_yellow_region(image, x_start=225, x_end=390):
         return y
     return None
 
-def draw_reference_ticks(image, y_detected):
+def draw_reference_ticks(station, image, y_detected):
     """
     Draw reference level ticks every 0.1 m using the calibrated inverse mapping.
     Green for ticks above (<= y_detected), red for below.
     """
     # Choose a reasonable display range based on calibration
-    lvl_top = max(4.2, LVL_MAX)   # a bit above
-    lvl_bot = min(2.3, LVL_MIN)   # a bit below
+    (_, lvl_max), (_, lvl_min) = get_bounds(station)
+    lvl_top = max(4.2, lvl_max)   # a bit above
+    lvl_bot = min(2.3, lvl_min)   # a bit below
     lvl = lvl_top
     while lvl >= lvl_bot:
-        y = int(level_to_pixel(lvl))
+        y = int(level_to_pixel(station, lvl))
         color = (0, 255, 0) if y <= (y_detected or 10**9) else (0, 0, 255)
         cv2.line(image, (0, y), (image.shape[1], y), color, 1)
         cv2.putText(image, f"{lvl:.1f}m", (image.shape[1]-150, max(15, y-5)),
@@ -992,18 +972,18 @@ def capture_last_frame_from_video(video_url):
     cap.release()
     return None
 
-def store_frame(image, prefix="", postfix=""):
-    """Upload a frame to object storage. Returns its public URL."""
+def store_frame(station, image, prefix="", postfix=""):
+    """Upload a frame to the station's area of object storage. Returns its public URL."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    key = f"{storage.CAPTURE_PREFIX}{prefix}_{timestamp}{postfix}.jpg"
+    key = f"{station.capture_prefix}{prefix}_{timestamp}{postfix}.jpg"
     return storage.upload_frame(image, key)
 
-def rotate_images():
-    """Delete old captures from object storage, keeping the most recent MAX_KEEP."""
+def rotate_images(station):
+    """Delete old captures for one station, keeping the most recent MAX_KEEP."""
     try:
-        storage.prune_captures(MAX_KEEP)
+        storage.prune_captures(station.capture_prefix, MAX_KEEP)
     except Exception as e:
-        print(f"Error pruning captures: {e}")
+        print(f"Error pruning captures for {station.id}: {e}")
 
 def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
     """Generate an image that shows only the water level line matching the detected level."""
@@ -1017,13 +997,29 @@ def generate_water_level_line_image(original_image, y_lowest_yellow, water_level
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
     return water_level_image
 
-@app.route('/status', methods=['GET'])
-@cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
-def get_status():
-    """Endpoint to get the water level and return image URLs."""
-    global previous_water_level
+def resolve_station(station_id):
+    """A station from the URL. Unknown ids are a 404 rather than a silent fallback,
+    so a mistyped link cannot quietly show another river's readings."""
+    if station_id is None:
+        return stations.get(None)
+    if not stations.exists(station_id):
+        abort(404, description=f"Unknown station '{station_id}'")
+    return stations.get(station_id)
 
-    video_segments = get_video_segments()
+@app.route('/api/stations', methods=['GET'])
+def get_stations():
+    return jsonify({
+        "default": stations.default_id(),
+        "stations": [st.public() for st in stations.all_stations()],
+    })
+
+@app.route('/status', methods=['GET'])
+@app.route('/status/<station_id>', methods=['GET'])
+@cache.cached(timeout=CACHE_TTL, key_prefix=cache_key)
+def get_status(station_id=None):
+    """Endpoint to get the water level and return image URLs."""
+    station = resolve_station(station_id)
+    video_segments = get_video_segments(station)
     if not video_segments:
         return jsonify({"error": "Failed to retrieve video segments from HLS playlist."}), 500
 
@@ -1044,20 +1040,21 @@ def get_status():
         return jsonify({"error": "Failed to capture frame from any video segment."}), 500
 
     # Align frame to handle camera movement
-    aligned_frame = align_image(original_frame)
+    with station.lock:
+        aligned_frame = align_image(station, original_frame)
 
-    # Perform enhanced detection with smoothing
-    raw_detection = detect_yellow_region_fused(aligned_frame)
-    y_lowest_yellow = smooth_detection(raw_detection)
+        # Perform enhanced detection with smoothing
+        raw_detection = detect_yellow_region_fused(aligned_frame, station.x_start, station.x_end)
+        y_lowest_yellow = smooth_detection(station, raw_detection)
 
     if y_lowest_yellow is None:
-        water_level = previous_water_level
+        water_level = station.previous_level
         print("Yellow region not detected, using previous water level:", water_level)
 
-        original_image_url = store_frame(aligned_frame, "water_level_image", "_original")
+        original_image_url = store_frame(station, aligned_frame, "water_level_image", "_original")
 
         # Clean up old captures to maintain MAX_KEEP limit
-        rotate_images()
+        rotate_images(station)
 
         unix_timestamp = int(datetime.now().timestamp())
 
@@ -1071,20 +1068,20 @@ def get_status():
         })
 
     # Compute level using calibrated mapping
-    water_level = float(pixel_to_level(float(y_lowest_yellow)))
-    previous_water_level = water_level
+    water_level = float(pixel_to_level(station, float(y_lowest_yellow)))
+    station.previous_level = water_level
 
     processed_frame = aligned_frame.copy()
     # Draw reference ticks for context
-    draw_reference_ticks(processed_frame, y_lowest_yellow)
+    draw_reference_ticks(station, processed_frame, y_lowest_yellow)
 
-    processed_image_url = store_frame(processed_frame, "water_level_image", "_processed")
-    original_image_url = store_frame(aligned_frame, "water_level_image", "_original")
+    processed_image_url = store_frame(station, processed_frame, "water_level_image", "_processed")
+    original_image_url = store_frame(station, aligned_frame, "water_level_image", "_original")
     water_level_line_image = generate_water_level_line_image(aligned_frame, y_lowest_yellow, water_level)
-    water_level_line_image_url = store_frame(water_level_line_image, "water_level_image", "_level_lines")
+    water_level_line_image_url = store_frame(station, water_level_line_image, "water_level_image", "_level_lines")
 
     # Clean up old captures to maintain MAX_KEEP limit
-    rotate_images()
+    rotate_images(station)
 
     unix_timestamp = int(datetime.now().timestamp())
 
@@ -1094,14 +1091,16 @@ def get_status():
         "processed_image_url": processed_image_url,
         "water_level_line_image_url": water_level_line_image_url,
         "timestamp": unix_timestamp,
-        "calibration_points": CAL_POINTS
+        "calibration_points": station.cal_points
     })
 
 @app.route('/debug', methods=['GET'])
-def debug_detection():
+@app.route('/debug/<station_id>', methods=['GET'])
+def debug_detection(station_id=None):
     """Debug endpoint to visualize color + edge fusion detection."""
+    station = resolve_station(station_id)
     try:
-        video_url = get_video_url()
+        video_url = get_video_url(station)
         if not video_url:
             return jsonify({"error": "Failed to get video URL"}), 500
         
@@ -1109,13 +1108,13 @@ def debug_detection():
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
-        aligned_frame = align_image(original_frame)
+        aligned_frame = align_image(station, original_frame)
         
         # Create debug visualization
         debug_image = visualize_detection_debug(aligned_frame)
         
         # Run detection
-        detected_y = detect_yellow_region_fused(aligned_frame)
+        detected_y = detect_yellow_region_fused(aligned_frame, station.x_start, station.x_end)
         
         # Draw detection result on debug image
         if detected_y is not None:
@@ -1125,7 +1124,7 @@ def debug_detection():
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Save debug image
-        debug_image_url = store_frame(debug_image, "detection_debug")
+        debug_image_url = store_frame(station, debug_image, "detection_debug")
 
         return jsonify({
             "debug_image_url": debug_image_url,
@@ -1137,10 +1136,12 @@ def debug_detection():
         return jsonify({"error": f"Debug failed: {str(e)}"}), 500
 
 @app.route('/debug-water', methods=['GET'])
-def debug_water_level():
+@app.route('/debug-water/<station_id>', methods=['GET'])
+def debug_water_level(station_id=None):
     """Specialized debug endpoint for water level detection only."""
+    station = resolve_station(station_id)
     try:
-        video_url = get_video_url()
+        video_url = get_video_url(station)
         if not video_url:
             return jsonify({"error": "Failed to get video URL"}), 500
         
@@ -1148,45 +1149,47 @@ def debug_water_level():
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
-        aligned_frame = align_image(original_frame)
+        aligned_frame = align_image(station, original_frame)
         
         # Run water level detection
-        detected_y = detect_water_level_on_gauge(aligned_frame)
+        detected_y = detect_water_level_on_gauge(aligned_frame, station.x_start, station.x_end)
         
         # Create water level debug visualization
         debug_image = visualize_water_level_debug(aligned_frame)
         
         # Save debug image
-        water_level_debug_url = store_frame(debug_image, "water_level_debug")
+        water_level_debug_url = store_frame(station, debug_image, "water_level_debug")
 
         water_level = None
         
         if detected_y is not None:
-            water_level = float(pixel_to_level(float(detected_y)))
+            water_level = float(pixel_to_level(station, float(detected_y)))
         
         return jsonify({
             "water_level_debug_url": water_level_debug_url,
             "detected_y_pixel": detected_y,
             "water_level_meters": water_level,
             "detection_success": detected_y is not None,
-            "calibration_points": CAL_POINTS
+            "calibration_points": station.cal_points
         })
         
     except Exception as e:
         return jsonify({"error": f"Water level debug failed: {str(e)}"}), 500
 
 @app.route('/calibrate', methods=['GET'])
-def calibrate_ui():
+@app.route('/calibrate/<station_id>', methods=['GET'])
+def calibrate_ui(station_id=None):
     """Serve the calibration UI page."""
-    return render_template('calibrate.html')
+    return render_template('calibrate.html', station_id=resolve_station(station_id).id)
 
 @app.route('/api/calibration', methods=['GET', 'POST'])
-def handle_calibration():
+@app.route('/api/<station_id>/calibration', methods=['GET', 'POST'])
+def handle_calibration(station_id=None):
     """Get or update calibration points."""
-    global CAL_POINTS, PIX_MIN, LVL_MAX, PIX_MAX, LVL_MIN
-    
+    station = resolve_station(station_id)
+
     if request.method == 'GET':
-        return jsonify({"points": CAL_POINTS})
+        return jsonify({"points": station.cal_points})
         
     elif request.method == 'POST':
         data = request.json
@@ -1198,19 +1201,20 @@ def handle_calibration():
         if not isinstance(points, list) or not all(isinstance(p, list) and len(p) == 2 for p in points):
             return jsonify({"error": "Points must be a list of [pixel, level] pairs"}), 400
             
-        if save_calibration_to_file(points):
-            load_calibration()
-            PIX_MIN, LVL_MAX = get_bounds()[0]
-            PIX_MAX, LVL_MIN = get_bounds()[1]
-            return jsonify({"success": True, "points": CAL_POINTS})
+        if save_calibration_to_file(station, points):
+            load_calibration(station)
+            return jsonify({"success": True, "points": station.cal_points})
         else:
             return jsonify({"error": "Failed to save calibration"}), 500
 
 @app.route('/api/markers', methods=['GET', 'POST'])
-def handle_markers():
+@app.route('/api/<station_id>/markers', methods=['GET', 'POST'])
+def handle_markers(station_id=None):
     """Reference lines drawn across the trend chart: warning levels and past floods."""
+    station = resolve_station(station_id)
+
     if request.method == 'GET':
-        return jsonify({"markers": database.load_markers()})
+        return jsonify({"markers": database.load_markers(station.id)})
 
     data = request.json or {}
     if not isinstance(data.get("markers"), list):
@@ -1240,14 +1244,16 @@ def handle_markers():
         cleaned.append({"label": label[:40], "level": level, "color": color})
 
     cleaned.sort(key=lambda m: m["level"], reverse=True)
-    database.save_markers(cleaned)
+    database.save_markers(station.id, cleaned)
     return jsonify({"success": True, "markers": cleaned})
 
 @app.route('/api/calibration/frame', methods=['GET'])
-def get_calibration_frame():
+@app.route('/api/<station_id>/calibration/frame', methods=['GET'])
+def get_calibration_frame(station_id=None):
     """Fetch the latest video frame, set it as homography reference, and return its URL."""
+    station = resolve_station(station_id)
     try:
-        video_url = get_video_url()
+        video_url = get_video_url(station)
         if not video_url:
             return jsonify({"error": "Failed to get video URL"}), 500
             
@@ -1256,10 +1262,11 @@ def get_calibration_frame():
             return jsonify({"error": "Failed to capture frame"}), 500
             
         # Set this new frame as the reference for homography
-        set_reference_frame(original_frame)
+        with station.lock:
+            set_reference_frame(station, original_frame)
 
         # Save frame to return to UI
-        image_url = store_frame(original_frame, "calibration_frame")
+        image_url = store_frame(station, original_frame, "calibration_frame")
 
         return jsonify({
             "image_url": image_url
@@ -1268,17 +1275,20 @@ def get_calibration_frame():
         return jsonify({"error": f"Failed to get calibration frame: {str(e)}"}), 500
 
 @app.route('/')
-def dashboard():
+@app.route('/s/<station_id>')
+def dashboard(station_id=None):
     """Serve the main dashboard."""
-    return render_template('index.html')
+    return render_template('index.html', station_id=resolve_station(station_id).id)
 
 @app.route('/api/recent', methods=['GET'])
-def get_recent():
+@app.route('/api/<station_id>/recent', methods=['GET'])
+def get_recent(station_id=None):
     """Raw recent readings, for the current value and the capture strip."""
-    return jsonify(database.latest_readings(RECENT_LIMIT))
+    return jsonify(database.latest_readings(resolve_station(station_id).id, RECENT_LIMIT))
 
 @app.route('/api/history', methods=['GET'])
-def get_history():
+@app.route('/api/<station_id>/history', methods=['GET'])
+def get_history(station_id=None):
     """
     Level over a time range, for the chart.
 
@@ -1287,6 +1297,7 @@ def get_history():
     so a three-year view is a few hundred points instead of a few hundred
     thousand.
     """
+    station = resolve_station(station_id)
     now = int(time.time())
     try:
         end_ts = int(request.args.get("to", now))
@@ -1301,16 +1312,23 @@ def get_history():
     # an unbounded span would scan the whole collection.
     start_ts = max(start_ts, end_ts - MAX_RANGE_DAYS * 86400)
 
-    series = database.history_series(start_ts, end_ts)
+    series = database.history_series(station.id, start_ts, end_ts)
     series["from"] = start_ts
     series["to"] = end_ts
     series["max_range_days"] = MAX_RANGE_DAYS
     return jsonify(series)
 
-# Started here, not next to background_tracker: the thread runs immediately and
+# Started here, not next to background_tracker: the threads run immediately and
 # would race the rest of this module, calling helpers that are not defined yet.
-tracker_thread = threading.Thread(target=background_tracker, daemon=True)
-tracker_thread.start()
+# One thread per station keeps a dead camera from stalling the others.
+#
+# TRACKER_ENABLED=false lets a script import this module without it starting to
+# capture and write, which is what a one-off query or a test wants.
+if os.getenv("TRACKER_ENABLED", "true").lower() not in ("false", "0", "no"):
+    for _station in stations.all_stations():
+        threading.Thread(target=background_tracker, args=(_station,), daemon=True).start()
+else:
+    print("Background trackers disabled (TRACKER_ENABLED=false)")
 
 # Run Flask app
 if __name__ == '__main__':

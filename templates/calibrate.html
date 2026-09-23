@@ -33,7 +33,7 @@
         #markerStatus { font-size: 13px; margin-top: 10px; min-height: 18px; }
     </style>
 </head>
-<body>
+<body data-station="{{ station_id }}">
 
 <div class="container">
     <div class="canvas-container" id="canvasContainer">
@@ -43,6 +43,8 @@
     
     <div class="sidebar">
         <h1>Calibration</h1>
+        <p id="stationLine" style="margin:-8px 0 14px; font-size:14px; color:#555;"></p>
+        <nav id="stationNav" style="margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap;"></nav>
         <p class="instructions">
             - Drag the green lines on the image to adjust pixel positions.<br>
             - Edit the Water Level (m) in the boxes below.<br>
@@ -80,6 +82,9 @@
 </div>
 
 <script>
+    const STATION = document.body.dataset.station || "";
+    const API = "/api/" + STATION;
+
     const canvas = document.getElementById('calCanvas');
     const ctx = canvas.getContext('2d');
     const loading = document.getElementById('loading');
@@ -96,12 +101,12 @@
         loading.style.display = 'flex';
         try {
             // Get current calibration points
-            const calRes = await fetch('/api/calibration');
+            const calRes = await fetch(API + '/calibration');
             const calData = await calRes.json();
             points = calData.points.map((p, index) => ({ id: index, pixel: p[0], level: p[1] }));
             
             // Get reference frame
-            const imgRes = await fetch('/api/calibration/frame');
+            const imgRes = await fetch(API + '/calibration/frame');
             const imgData = await imgRes.json();
             
             if(imgData.image_url) {
@@ -228,7 +233,7 @@
         payload.sort((a, b) => a[0] - b[0]);
         
         try {
-            const res = await fetch('/api/calibration', {
+            const res = await fetch(API + '/calibration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ points: payload })
@@ -313,7 +318,7 @@
         render(); // clear old test line
         try {
             // We can call /debug-water to test the detection
-            const res = await fetch('/debug-water');
+            const res = await fetch('/debug-water/' + STATION);
             const data = await res.json();
             
             if (data.detection_success && data.detected_y_pixel !== null) {
@@ -337,7 +342,7 @@
 
     async function loadMarkers() {
         try {
-            const res = await fetch("/api/markers");
+            const res = await fetch(API + "/markers");
             const data = await res.json();
             markers = Array.isArray(data.markers) ? data.markers : [];
         } catch (e) {
@@ -403,7 +408,7 @@
         status.style.color = "#333";
         status.textContent = "Saving...";
         try {
-            const res = await fetch("/api/markers", {
+            const res = await fetch(API + "/markers", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ markers: markers })
@@ -425,7 +430,31 @@
         }
     }
 
+    async function loadStations() {
+        try {
+            const res = await fetch("/api/stations");
+            const data = await res.json();
+            const current = (data.stations || []).find(s => s.id === STATION);
+            document.getElementById("stationLine").textContent =
+                current ? `Station: ${current.name.en || current.id} (gauge at x ${current.roi.x_start}-${current.roi.x_end})` : "";
+
+            const nav = document.getElementById("stationNav");
+            nav.innerHTML = "";
+            if ((data.stations || []).length < 2) return;
+            data.stations.forEach(st => {
+                const a = document.createElement("a");
+                a.href = "/calibrate/" + st.id;
+                a.textContent = st.name.en || st.id;
+                a.className = "btn";
+                if (st.id !== STATION) a.style.background = "#6c757d";
+                a.style.textDecoration = "none";
+                nav.appendChild(a);
+            });
+        } catch (e) { console.error("Failed to load stations", e); }
+    }
+
     // Initial load
+    loadStations();
     fetchData();
     loadMarkers();
 </script>
