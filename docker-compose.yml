@@ -11,6 +11,22 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes: ["minio-data:/data"]
 
+  # Talks to every camera so the app does not have to. Credentials for the two
+  # Axis cameras arrive as MTX_PATHS_* overrides, never in mediamtx.yml.
+  # Pinned: option names move between releases and mediamtx.yml targets this one.
+  mediamtx:
+    # The -ffmpeg variant, not the plain one: that image is distroless, with no
+# ffmpeg for bridge2's runOnDemand and no CA bundle, so every https source
+# fails certificate verification.
+    image: bluenviron/mediamtx:1.21.1-ffmpeg
+    restart: unless-stopped
+    env_file: [.env]
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    # Not published to the host: only the app needs to reach it. Add an
+    # authInternalUsers section to mediamtx.yml first if you ever do publish it.
+    expose: ["8888", "8554"]
+
   mongo:
     image: mongo:8
     # override when 27017 is already taken: MONGO_PORT=27018 docker compose up -d

@@ -1,0 +1,81 @@
+# MediaMTX: the one place that talks to the cameras. The app then reads plain
+# HLS from here for every station and never holds a camera credential.
+#
+# Written against MediaMTX v1.21.1-ffmpeg, which docker-compose.yml pins. The
+# -ffmpeg variant is required: bridge2 shells out to ffmpeg, and the plain
+# image is distroless with no CA bundle, so https sources fail to verify. Option names
+# move between releases -- `rtspTransports` was `protocols` up to about v1.9 --
+# so change the pin and this file together.
+#
+# Nothing secret belongs in here. MediaMTX has no ${VAR} expansion inside the
+# config; it only lets environment variables OVERRIDE parameters, as
+# MTX_<PARAM> and MTX_PATHS_<PATHNAME>_<PARAM>. The two Axis cameras need a
+# password, so their source arrives that way from .env -- see .env.example.
+
+logLevel: info
+
+# The app reads http://mediamtx:8888/<station>/index.m3u8
+hls: yes
+hlsAddress: :8888
+# Not lowLatency: that serves partial fMP4 segments, which neither the playlist
+# parser nor the frame grabber reads. mpegts gives plain .ts segments.
+hlsVariant: mpegts
+hlsSegmentCount: 7
+hlsSegmentDuration: 2s
+# Only remux while something is reading, to match sourceOnDemand below.
+hlsAlwaysRemux: no
+
+rtsp: yes
+rtspAddress: :8554
+# TCP only: UDP needs ports opened back through NAT, which buys nothing here.
+rtspTransports: [tcp]
+
+# Not used by this deployment; off means less exposed.
+rtmp: no
+webrtc: no
+srt: no
+
+# No authentication is configured because nothing publishes here and the ports
+# stay on the compose network. If you publish 8888 or 8554 to the host, add an
+# authInternalUsers section with a read-only user before you do.
+
+pathDefaults:
+  # Connect to a camera only while the tracker is reading it. closeAfter is
+  # deliberately longer than the five-minute capture interval, so the link stays
+  # up between polls instead of paying a cold start every cycle, and still drops
+  # if the app stops.
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 30s
+  sourceOnDemandCloseAfter: 6m
+
+paths:
+  # ---- already HLS upstream; relayed so every station has the same shape ----
+
+  pathumthani:
+    source: http://101.109.253.60:8999/playlist.m3u8
+
+  pakkret:
+    source: https://www.thaiclouderp.com/video/pakkret-river.m3u8
+
+  rangsit:
+    source: https://s90.ipcamlive.com/streams/5asxkbexh0py8flva/stream.m3u8
+
+  # ---- Axis cameras: credentials come from the environment, never this file ----
+
+  # Plain RTSP over TCP on 554. Verified against the camera: h264 1920x1080 25fps.
+  # Needs:  MTX_PATHS_BRIDGE1_SOURCE=rtsp://<user>:<pass>@tc100224.dyndns.info:554/axis-media/media.amp
+  bridge1:
+    rtspTransport: tcp
+
+  # On this host 554 is filtered and only 5001 answers, where the camera tunnels
+  # RTSP over HTTP. rtspTransport accepts only automatic/udp/multicast/tcp, so
+  # ffmpeg does the tunnelling and publishes the result back into MediaMTX.
+  # Needs:  MTX_PATHS_BRIDGE2_RUNONDEMAND=ffmpeg -nostdin -rtsp_transport http -i rtsp://<user>:<pass>@ta100219.dyndns.info:5001/axis-media/media.amp -c copy -f rtsp rtsp://localhost:8554/bridge2
+  bridge2:
+    # ffmpeg publishes into this path, so the source is 'publisher' and the
+    # sourceOnDemand default above does not apply -- MediaMTX refuses to start
+    # if it is left on. runOnDemand is the equivalent for a published path.
+    sourceOnDemand: no
+    runOnDemandRestart: yes
+    runOnDemandStartTimeout: 30s
+    runOnDemandCloseAfter: 6m
