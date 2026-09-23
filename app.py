@@ -3,7 +3,8 @@ import numpy as np
 import requests
 import os
 import warnings
-from flask import Flask, jsonify, send_from_directory, request
+import json
+from flask import Flask, jsonify, send_from_directory, request, render_template
 from datetime import datetime
 from flask_caching import Cache
 
@@ -39,6 +40,7 @@ MAX_HISTORY = 5
 # =========================
 # Pixel is measured from top of the image (y increases downward)
 # Ensure points are sorted by pixel (descending level with increasing pixel)
+CALIBRATION_FILE = "calibration.json"
 CAL_POINTS = [
     (34,  3.90),
     (55,  3.80),
@@ -49,12 +51,41 @@ CAL_POINTS = [
     (282, 2.70),
     (317, 2.50),
 ]
-# sort by pixel ascending just in case
-CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])  # [(20,4.0), (34,3.9), (235,3.0), (317,2.5)]
+
+def load_calibration():
+    global CAL_POINTS
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, "r") as f:
+                data = json.load(f)
+                points = data.get("points", [])
+                if points:
+                    CAL_POINTS = [tuple(p) for p in points]
+        except Exception as e:
+            print(f"Error loading calibration: {e}")
+            
+    CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])
+
+def save_calibration_to_file(points):
+    try:
+        with open(CALIBRATION_FILE, "w") as f:
+            json.dump({"points": points}, f, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving calibration: {e}")
+        return False
+
+# Load from file on startup
+load_calibration()
 
 # Useful bounds
-PIX_MIN, LVL_MAX = CAL_POINTS[0]
-PIX_MAX, LVL_MIN = CAL_POINTS[-1]
+def get_bounds():
+    if CAL_POINTS:
+        return CAL_POINTS[0], CAL_POINTS[-1]
+    return (0, 0), (0, 0)
+
+PIX_MIN, LVL_MAX = get_bounds()[0]
+PIX_MAX, LVL_MIN = get_bounds()[1]
 
 def pixel_to_level(y: float) -> float:
     """
@@ -1243,6 +1274,62 @@ def debug_water_level():
         
     except Exception as e:
         return jsonify({"error": f"Water level debug failed: {str(e)}"}), 500
+
+@app.route('/calibrate', methods=['GET'])
+def calibrate_ui():
+    """Serve the calibration UI page."""
+    return render_template('calibrate.html')
+
+@app.route('/api/calibration', methods=['GET', 'POST'])
+def handle_calibration():
+    """Get or update calibration points."""
+    global CAL_POINTS, PIX_MIN, LVL_MAX, PIX_MAX, LVL_MIN
+    
+    if request.method == 'GET':
+        return jsonify({"points": CAL_POINTS})
+        
+    elif request.method == 'POST':
+        data = request.json
+        if not data or 'points' not in data:
+            return jsonify({"error": "Invalid payload"}), 400
+            
+        points = data['points']
+        # Validate format
+        if not isinstance(points, list) or not all(isinstance(p, list) and len(p) == 2 for p in points):
+            return jsonify({"error": "Points must be a list of [pixel, level] pairs"}), 400
+            
+        if save_calibration_to_file(points):
+            load_calibration()
+            PIX_MIN, LVL_MAX = get_bounds()[0]
+            PIX_MAX, LVL_MIN = get_bounds()[1]
+            return jsonify({"success": True, "points": CAL_POINTS})
+        else:
+            return jsonify({"error": "Failed to save calibration"}), 500
+
+@app.route('/api/calibration/frame', methods=['GET'])
+def get_calibration_frame():
+    """Fetch the latest video frame, set it as homography reference, and return its URL."""
+    try:
+        video_url = get_video_url()
+        if not video_url:
+            return jsonify({"error": "Failed to get video URL"}), 500
+            
+        original_frame = capture_last_frame_from_video(video_url)
+        if original_frame is None:
+            return jsonify({"error": "Failed to capture frame"}), 500
+            
+        # Set this new frame as the reference for homography
+        init_reference_frame(original_frame)
+        
+        # Save frame to return to UI
+        filename = save_image(original_frame, "calibration_frame")
+        base_ = request.host_url
+        
+        return jsonify({
+            "image_url": f"{base_}images/{filename}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get calibration frame: {str(e)}"}), 500
 
 # Run Flask app
 if __name__ == '__main__':
