@@ -6,9 +6,12 @@ import warnings
 import json
 import threading
 import time
-from flask import Flask, jsonify, send_from_directory, request, render_template
+from flask import Flask, jsonify, request, render_template
 from datetime import datetime
 from flask_caching import Cache
+
+import storage
+import database
 
 # Suppress OpenCV warnings and H.264 decoder warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -23,8 +26,11 @@ cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
 # Get TTL from environment variable or set a default
 CACHE_TTL = int(os.getenv('CACHE_TTL', 300))
 
-# Maximum number of images to keep (delete older ones automatically)
+# Maximum number of captures to keep (older ones are deleted automatically)
 MAX_KEEP = int(os.getenv("MAX_KEEP_IMAGES", 200))
+
+storage.init()
+database.init()
 
 # Base URL for fetching HLS playlist
 base_url = "http://101.109.253.60:8999/"
@@ -42,65 +48,37 @@ MAX_HISTORY = 5
 # =========================
 # Pixel is measured from top of the image (y increases downward)
 # Ensure points are sorted by pixel (descending level with increasing pixel)
-CALIBRATION_FILE = "calibration.json"
 CAL_POINTS = []
 
 def load_calibration():
     global CAL_POINTS
-    if os.path.exists(CALIBRATION_FILE):
-        try:
-            with open(CALIBRATION_FILE, "r") as f:
-                data = json.load(f)
-                points = data.get("points", [])
-                if points:
-                    CAL_POINTS = [tuple(p) for p in points]
-        except Exception as e:
-            print(f"Error loading calibration: {e}")
-            
-    CAL_POINTS = sorted(CAL_POINTS, key=lambda x: x[0])
+    try:
+        CAL_POINTS = sorted(database.load_calibration_points(), key=lambda x: x[0])
+    except Exception as e:
+        print(f"Error loading calibration: {e}")
 
 def save_calibration_to_file(points):
     try:
-        with open(CALIBRATION_FILE, "w") as f:
-            json.dump({"points": points}, f, indent=4)
+        database.save_calibration_points(points)
         return True
     except Exception as e:
         print(f"Error saving calibration: {e}")
         return False
 
-# Load from file on startup
 load_calibration()
 
 # =========================
 # History Tracking
 # =========================
-HISTORY_FILE = "history.json"
-history_data = []
 MAX_HISTORY_RECORDS = 288 # 24 hours at 5 min intervals
-
-def load_history():
-    global history_data
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                history_data = json.load(f)
-        except Exception as e:
-            print(f"Error loading history: {e}")
-
-def save_history():
-    try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history_data[-MAX_HISTORY_RECORDS:], f)
-    except Exception as e:
-        print(f"Error saving history: {e}")
-
-load_history()
 
 def background_tracker():
     """Runs every 5 minutes to capture and record the water level."""
     while True:
         try:
             print("Running background water level check...")
+            # picks up calibration saved by another replica
+            load_calibration()
             video_url = get_video_url()
             if video_url:
                 frame = capture_last_frame_from_video(video_url)
@@ -115,19 +93,13 @@ def background_tracker():
                     if y is not None:
                         level = float(pixel_to_level(float(y)))
                         
-                        # Save image specifically for history
                         timestamp = int(time.time())
-                        filename = save_image(aligned_frame, "history", f"_{timestamp}")
-                        
+                        image_url = store_frame(aligned_frame, "history", f"_{timestamp}")
+
                         # "y" lets the dashboard draw the detected waterline over
                         # the frame, so a wrong reading is visible rather than implied.
-                        history_data.append({
-                            "timestamp": timestamp,
-                            "level": round(level, 2),
-                            "image": filename,
-                            "y": int(y)
-                        })
-                        save_history()
+                        database.add_reading(timestamp, level, image_url, y)
+                        database.prune_readings(MAX_HISTORY_RECORDS)
                         rotate_images()
                         print(f"Background check successful. Level: {level:.2f}m")
         except Exception as e:
@@ -205,42 +177,38 @@ def level_to_pixel(level_m: float) -> float:
     t = (level_m - y1) / (y2 - y1)
     return x1 + (x2 - x1) * t
 
-# Directory to save images
-save_directory = "images"
-if not os.path.exists(save_directory):
-    os.makedirs(save_directory)
-
 # =========================
 # Homography Alignment
 # =========================
-REFERENCE_IMAGE_PATH = os.path.join(save_directory, "reference_frame.jpg")
 reference_data = {"image": None, "keypoints": None, "descriptors": None}
 # Initialize ORB detector
 orb = cv2.ORB_create(nfeatures=2000)
 
-def init_reference_frame(frame):
-    """Initialize or load the reference frame for homography."""
+def _adopt_reference(frame):
+    """Hold `frame` in memory as the homography baseline."""
     global reference_data
-    if os.path.exists(REFERENCE_IMAGE_PATH):
-        ref_img = cv2.imread(REFERENCE_IMAGE_PATH)
-        if ref_img is not None:
-            gray_ref = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
-            kp, des = orb.detectAndCompute(gray_ref, None)
-            reference_data["image"] = ref_img
-            reference_data["keypoints"] = kp
-            reference_data["descriptors"] = des
-            print("Loaded reference frame for homography.")
-            return True
-            
-    # If not exists or failed to load, save current frame as reference
-    print("Saving new reference frame for homography.")
-    cv2.imwrite(REFERENCE_IMAGE_PATH, frame)
     gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     kp, des = orb.detectAndCompute(gray_ref, None)
     reference_data["image"] = frame.copy()
     reference_data["keypoints"] = kp
     reference_data["descriptors"] = des
+
+def set_reference_frame(frame):
+    """Make `frame` the new homography baseline and persist it."""
+    _adopt_reference(frame)
+    storage.upload_frame(frame, storage.REFERENCE_KEY)
+    print("Stored new reference frame for homography.")
     return True
+
+def init_reference_frame(frame):
+    """Load the stored baseline, falling back to `frame` when there is none yet."""
+    stored = storage.download_frame(storage.REFERENCE_KEY)
+    if stored is not None:
+        _adopt_reference(stored)
+        print("Loaded reference frame for homography.")
+        return True
+
+    return set_reference_frame(frame)
 
 def align_image(frame):
     """Align the given frame to the reference frame using ORB feature matching."""
@@ -984,34 +952,18 @@ def capture_last_frame_from_video(video_url):
     cap.release()
     return None
 
-def save_image(image, prefix="", postfix=""):
-    """Save the image to the specified directory with a timestamped filename."""
+def store_frame(image, prefix="", postfix=""):
+    """Upload a frame to object storage. Returns its public URL."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_filename = f"{prefix}_{timestamp}{postfix}.jpg"
-    save_path = os.path.join(save_directory, image_filename)
-    cv2.imwrite(save_path, image)
-    return image_filename
+    key = f"{storage.CAPTURE_PREFIX}{prefix}_{timestamp}{postfix}.jpg"
+    return storage.upload_frame(image, key)
 
-def rotate_images(dir_="images"):
-    """
-    Delete old images, keeping only the most recent MAX_KEEP images.
-    Files are sorted by filename which contains timestamp.
-    """
+def rotate_images():
+    """Delete old captures from object storage, keeping the most recent MAX_KEEP."""
     try:
-        files = sorted([f for f in os.listdir(dir_) if f.endswith(".jpg")])
-        if len(files) > MAX_KEEP:
-            files_to_delete = files[:-MAX_KEEP]
-            deleted_count = 0
-            for f in files_to_delete:
-                try:
-                    file_path = os.path.join(dir_, f)
-                    os.remove(file_path)
-                    deleted_count += 1
-                except OSError as e:
-                    print(f"Error deleting file {f}: {e}")
-            print(f"Image rotation: Deleted {deleted_count} old images, keeping {MAX_KEEP} most recent")
-    except OSError as e:
-        print(f"Error during image rotatation: {e}")
+        storage.prune_captures(MAX_KEEP)
+    except Exception as e:
+        print(f"Error pruning captures: {e}")
 
 def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
     """Generate an image that shows only the water level line matching the detected level."""
@@ -1062,17 +1014,16 @@ def get_status():
         water_level = previous_water_level
         print("Yellow region not detected, using previous water level:", water_level)
 
-        original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
-        
-        # Clean up old images to maintain MAX_KEEP limit
+        original_image_url = store_frame(aligned_frame, "water_level_image", "_original")
+
+        # Clean up old captures to maintain MAX_KEEP limit
         rotate_images()
-        
-        base_ = request.host_url
+
         unix_timestamp = int(datetime.now().timestamp())
 
         return jsonify({
             "water_level": water_level,
-            "original_image_url": f"{base_}images/{original_image_filename}",
+            "original_image_url": original_image_url,
             "processed_image_url": None,
             "water_level_line_image_url": None,
             "timestamp": unix_timestamp,
@@ -1087,30 +1038,24 @@ def get_status():
     # Draw reference ticks for context
     draw_reference_ticks(processed_frame, y_lowest_yellow)
 
-    processed_image_filename = save_image(processed_frame, "water_level_image", "_processed")
-    original_image_filename = save_image(aligned_frame, "water_level_image", "_original")
+    processed_image_url = store_frame(processed_frame, "water_level_image", "_processed")
+    original_image_url = store_frame(aligned_frame, "water_level_image", "_original")
     water_level_line_image = generate_water_level_line_image(aligned_frame, y_lowest_yellow, water_level)
-    water_level_line_image_filename = save_image(water_level_line_image, "water_level_image", "_level_lines")
-    
-    # Clean up old images to maintain MAX_KEEP limit
+    water_level_line_image_url = store_frame(water_level_line_image, "water_level_image", "_level_lines")
+
+    # Clean up old captures to maintain MAX_KEEP limit
     rotate_images()
 
-    base_ = request.host_url
     unix_timestamp = int(datetime.now().timestamp())
 
     return jsonify({
         "water_level": water_level,
-        "original_image_url": f"{base_}images/{original_image_filename}",
-        "processed_image_url": f"{base_}images/{processed_image_filename}",
-        "water_level_line_image_url": f"{base_}images/{water_level_line_image_filename}",
+        "original_image_url": original_image_url,
+        "processed_image_url": processed_image_url,
+        "water_level_line_image_url": water_level_line_image_url,
         "timestamp": unix_timestamp,
         "calibration_points": CAL_POINTS
     })
-
-@app.route('/images/<filename>', methods=['GET'])
-def serve_image(filename):
-    """Serve the saved images from the folder."""
-    return send_from_directory(save_directory, filename)
 
 @app.route('/debug', methods=['GET'])
 def debug_detection():
@@ -1140,11 +1085,10 @@ def debug_detection():
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Save debug image
-        debug_filename = save_image(debug_image, "detection_debug")
-        
-        base_ = request.host_url
+        debug_image_url = store_frame(debug_image, "detection_debug")
+
         return jsonify({
-            "debug_image_url": f"{base_}images/{debug_filename}",
+            "debug_image_url": debug_image_url,
             "detected_y": detected_y,
             "detection_success": detected_y is not None
         })
@@ -1173,16 +1117,15 @@ def debug_water_level():
         debug_image = visualize_water_level_debug(aligned_frame)
         
         # Save debug image
-        debug_filename = save_image(debug_image, "water_level_debug")
-        
-        base_ = request.host_url
+        water_level_debug_url = store_frame(debug_image, "water_level_debug")
+
         water_level = None
         
         if detected_y is not None:
             water_level = float(pixel_to_level(float(detected_y)))
         
         return jsonify({
-            "water_level_debug_url": f"{base_}images/{debug_filename}",
+            "water_level_debug_url": water_level_debug_url,
             "detected_y_pixel": detected_y,
             "water_level_meters": water_level,
             "detection_success": detected_y is not None,
@@ -1236,14 +1179,13 @@ def get_calibration_frame():
             return jsonify({"error": "Failed to capture frame"}), 500
             
         # Set this new frame as the reference for homography
-        init_reference_frame(original_frame)
-        
+        set_reference_frame(original_frame)
+
         # Save frame to return to UI
-        filename = save_image(original_frame, "calibration_frame")
-        base_ = request.host_url
-        
+        image_url = store_frame(original_frame, "calibration_frame")
+
         return jsonify({
-            "image_url": f"{base_}images/{filename}"
+            "image_url": image_url
         })
     except Exception as e:
         return jsonify({"error": f"Failed to get calibration frame: {str(e)}"}), 500
@@ -1256,7 +1198,7 @@ def dashboard():
 @app.route('/api/history', methods=['GET'])
 def get_history():
     """Return the historical water level data."""
-    return jsonify(history_data)
+    return jsonify(database.recent_readings(MAX_HISTORY_RECORDS))
 
 # Started here, not next to background_tracker: the thread runs immediately and
 # would race the rest of this module, calling helpers that are not defined yet.

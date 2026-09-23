@@ -1011,10 +1011,10 @@
 
     function renderCamera() {
         var shot = shownShot();
-        if (!shot) return;
+        if (!shot || !shot.image_url) return;
 
         var img = $("frameImg");
-        var src = "/images/" + shot.image;
+        var src = shot.image_url;
         if (img.getAttribute("src") !== src) {
             img.onload = function () {
                 $("skeleton").style.display = "none";
@@ -1058,7 +1058,7 @@
             btn.title = clockTime(shot.timestamp) + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
 
             var img = document.createElement("img");
-            img.src = "/images/" + shot.image;
+            img.src = shot.image_url;
             img.alt = t("gaugeAt", { t: clockTime(shot.timestamp) });
             img.loading = "lazy";
 

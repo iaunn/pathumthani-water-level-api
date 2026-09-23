@@ -72,11 +72,70 @@ API ใช้การปรับเทียบพิกเซลเพื่�
 
 ## ข้อมูลเทคนิค
 
-- **Port**: 4050 (เปลี่ยนจาก 5000)
+- **Port**: 4050
 - **Caching**: 300 วินาที (ปรับได้ผ่าน CACHE_TTL)
 - **Video Format**: HLS (.m3u8) segments
 - **Image Processing**: OpenCV with fallback mechanisms
-- **Error Handling**: Robust fallback to previous water level
+- **Object storage**: S3-compatible (MinIO, Cloudflare R2, AWS S3)
+- **Database**: MongoDB
+
+## การตั้งค่า (Environment variables)
+
+แอปนี้ต้องมี object storage และ MongoDB เสมอ ถ้าตั้งค่าไม่ครบจะหยุดทำงานตั้งแต่ตอนบูต
+พร้อมข้อความบอกว่าขาดตัวไหน ดูตัวอย่างครบชุดได้ที่ `.env.example`
+
+| ตัวแปร | ความหมาย |
+|---|---|
+| `S3_BUCKET` | ชื่อ bucket |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | คีย์สำหรับเขียนไฟล์ |
+| `S3_ENDPOINT_URL` | endpoint ที่แอปเขียนไฟล์ ใส่สำหรับ MinIO/R2 เว้นว่างได้ถ้าใช้ AWS S3 |
+| `S3_PUBLIC_BASE_URL` | URL ที่เบราว์เซอร์ใช้อ่านภาพ (bucket แบบ public หรือโดเมน CDN) |
+| `S3_REGION` | `auto` สำหรับ R2/MinIO หรือ region จริงของ AWS S3 |
+| `S3_ADDRESSING_STYLE` | `path` สำหรับ MinIO, `virtual` สำหรับ R2/AWS |
+| `MONGODB_URI` | connection string ของ MongoDB |
+| `MONGODB_DATABASE` | ชื่อฐานข้อมูล (ค่าเริ่มต้น `water_level`) |
+| `MAX_KEEP_IMAGES` | จำนวนภาพที่เก็บไว้ ภาพเก่ากว่านั้นถูกลบจาก bucket (ค่าเริ่มต้น 200) |
+
+ภาพถูกเก็บที่ `captures/` และภาพอ้างอิงสำหรับ homography อยู่ที่
+`reference/reference_frame.jpg` ส่วนค่า calibration กับประวัติระดับน้ำเก็บใน MongoDB
+ทำให้ container ไม่มี state ของตัวเอง รันหลาย replica หรือ redeploy ได้โดยไม่ต้อง mount volume
+
+## Local development
+
+```bash
+docker compose up -d                 # MinIO + MongoDB
+# ถ้าพอร์ต 27017 ถูกใช้อยู่แล้ว: MONGO_PORT=27018 docker compose up -d
+```
+
+สร้าง bucket ครั้งแรกและเปิดให้อ่านแบบ public:
+
+```bash
+python -c "
+import boto3, json
+from botocore.config import Config
+c = boto3.client('s3', endpoint_url='http://localhost:9000',
+    aws_access_key_id='minioadmin', aws_secret_access_key='minioadmin',
+    region_name='auto', config=Config(signature_version='s3v4', s3={'addressing_style':'path'}))
+c.create_bucket(Bucket='water-level')
+c.put_bucket_policy(Bucket='water-level', Policy=json.dumps({'Version':'2012-10-17','Statement':[
+    {'Effect':'Allow','Principal':{'AWS':['*']},'Action':['s3:GetObject'],
+     'Resource':['arn:aws:s3:::water-level/*']}]}))
+"
+```
+
+จากนั้น `cp .env.example .env` แล้ว export ค่าเหล่านั้นก่อนรัน `python app.py`
+
+## ย้ายข้อมูลเดิม
+
+ถ้าเคยรันเวอร์ชันที่เก็บไฟล์บนดิสก์ ให้นำค่า calibration ที่ปรับไว้เข้า MongoDB ก่อน:
+
+```bash
+python migrate.py
+```
+
+สคริปต์อ่าน `calibration.json` แล้วเขียนลง MongoDB และจะไม่เขียนทับถ้ามีข้อมูลอยู่แล้ว
+ส่วน `history.json` ไม่ได้ย้ายให้ เพราะข้อมูลสร้างใหม่ได้ภายในวันเดียว และภาพที่อ้างถึง
+อยู่บนดิสก์ที่แอปไม่อ่านแล้ว
 
 ## สำหรับนักพัฒนา
 ### ข้อกำหนด
@@ -87,7 +146,7 @@ API ใช้การปรับเทียบพิกเซลเพื่�
 ### Deploy from pre-built Docker images
 ```bash
 docker pull ghcr.io/iaunn/pathumthani-water-level-api
-docker run -d -it -p 4050:4050 -e CACHE_TTL=300 --name pathumthani-water-level-api ghcr.io/iaunn/pathumthani-water-level-api
+docker run -d -it -p 4050:4050 --env-file .env --name pathumthani-water-level-api ghcr.io/iaunn/pathumthani-water-level-api
 ```
 
 ### การติดตั้ง
@@ -103,7 +162,7 @@ docker build -t pathumthani-water-level-api .
 ```
 3. รัน Docker container:
 ```bash
-docker run -d -it -p 4050:4050 -e CACHE_TTL=300 --name pathumthani-water-level-api pathumthani-water-level-api
+docker run -d -it -p 4050:4050 --env-file .env --name pathumthani-water-level-api pathumthani-water-level-api
 ```
 
 ### หมายเหตุ
