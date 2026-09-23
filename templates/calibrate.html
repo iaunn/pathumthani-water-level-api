@@ -46,6 +46,9 @@
             <button class="btn" onclick="fetchData()" style="background:#6c757d;">Refresh Image</button>
         </div>
         
+        <button class="btn" onclick="testDetection()" style="background:#17a2b8; width: 100%; margin-bottom: 20px;">Test Detection</button>
+        <div id="testResult" style="margin-bottom: 20px; font-weight: bold; color: #dc3545;"></div>
+        
         <div class="point-list" id="pointList">
             <!-- Points will be injected here -->
         </div>
@@ -124,6 +127,22 @@
             ctx.fillStyle = '#000';
             ctx.fillText(p.level.toFixed(2) + 'm', canvas.width - 90, p.pixel - 7);
         });
+        
+        // Draw test detection result if available
+        if (testDetectedPixel !== null) {
+            ctx.beginPath();
+            ctx.moveTo(0, testDetectedPixel);
+            ctx.lineTo(canvas.width, testDetectedPixel);
+            ctx.strokeStyle = '#dc3545'; // Red color
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 10]); // Dashed line
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset
+            
+            ctx.fillStyle = '#dc3545';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText('Detected Level', 10, testDetectedPixel - 10);
+        }
     }
 
     function renderSidebar() {
@@ -158,7 +177,7 @@
     function addPoint() {
         points.push({
             id: Date.now(),
-            pixel: canvas.height / 2,
+            pixel: canvas.height - 10,  // Start near the bottom of the canvas
             level: 3.00
         });
         renderSidebar();
@@ -262,6 +281,32 @@
         hoverIndex = -1;
         render();
     });
+
+    let testDetectedPixel = null;
+
+    async function testDetection() {
+        loading.style.display = 'flex';
+        document.getElementById('testResult').innerText = "Testing...";
+        testDetectedPixel = null;
+        render(); // clear old test line
+        try {
+            // We can call /debug-water to test the detection
+            const res = await fetch('/debug-water');
+            const data = await res.json();
+            
+            if (data.detection_success && data.detected_y_pixel !== null) {
+                testDetectedPixel = data.detected_y_pixel;
+                document.getElementById('testResult').innerText = `Detected Water Level at Y: ${testDetectedPixel} (${data.water_level_meters ? data.water_level_meters.toFixed(2) + 'm' : 'N/A'})`;
+            } else {
+                document.getElementById('testResult').innerText = "Detection failed. Could not find water level.";
+            }
+            render();
+        } catch (e) {
+            console.error(e);
+            document.getElementById('testResult').innerText = "Error calling detection API.";
+        }
+        loading.style.display = 'none';
+    }
 
     // Initial load
     fetchData();
