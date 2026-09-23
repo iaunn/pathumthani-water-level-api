@@ -666,37 +666,61 @@ def detect_yellow_regions_fused(image, x_start=225, x_end=390):
     return None
 
 def detect_water_level_on_gauge(image, x_start=225, x_end=390,
-                                gap_window=60, gap_support=6):
+                                texture_drop=0.5, sustain_rows=9):
     """
-    Find the waterline as the lowest row where the yellow gauge staff is still visible.
+    Find the waterline by where the gauge staff stops looking like a gauge staff.
 
-    Works off a per-row profile rather than contours: the staff is broken up both by
-    its own black bands and by the arrow signs bolted across it, so any contour-based
-    pass splits into fragments and picks the wrong one. A row counts as the waterline
-    when at least `gap_support` of the `gap_window` rows above it also show gauge,
-    which bridges those occlusions while still rejecting speckle floating below.
+    Colour alone is not enough. The lower staff is wet and silted, so its yellow
+    fades below any threshold tight enough to exclude the water -- which shares
+    the staff's hue and differs only in saturation -- and the reading comes out
+    10-15cm high. Loosening the threshold instead walks the mask down the staff's
+    own reflection to the bottom of the frame.
+
+    What separates the two cleanly is texture: the staff carries black graduation
+    bands, so each of its rows spans a wide range of brightness, while water and
+    reflection are smooth. That range collapses at the waterline -- measured at
+    121 to 47 on one frame and 68 to 42 on another, both exactly at the surface.
+    The collapse is read relative to the staff's own rows, so it holds up as the
+    light changes through the day.
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # Deliberately tight: the muddy water sits at the same hue as the staff and is
-    # only separated by saturation, so loosening this makes the mask run off the
-    # bottom of the frame instead of stopping at the water.
-    lower_gauge = np.array([20, 140, 120])
-    upper_gauge = np.array([30, 255, 255])
-    gauge_mask = cv2.inRange(hsv, lower_gauge, upper_gauge)
+    # The strict mask is a poor waterline but a reliable way to locate the staff.
+    staff_mask = cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))
+    staff_mask[:, :x_start] = 0
+    staff_mask[:, x_end:] = 0
 
-    gauge_mask[:, :x_start] = 0
-    gauge_mask[:, x_end:] = 0
-
-    gauge_rows = (gauge_mask > 0).sum(axis=1) >= 2
-    if gauge_rows.sum() < 20:
+    ys, xs = np.nonzero(staff_mask)
+    if len(xs) < 50:
         return None
 
-    for y in range(len(gauge_rows) - 1, -1, -1):
-        if gauge_rows[y] and gauge_rows[max(0, y - gap_window):y + 1].sum() >= gap_support:
-            return y
+    left, right = int(np.percentile(xs, 5)), int(np.percentile(xs, 95))
+    if right - left < 6:
+        left, right = max(0, left - 4), right + 4
 
-    return None
+    column = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)[:, left:right + 1].astype(int)
+    contrast = np.convolve(column.max(axis=1) - column.min(axis=1),
+                           np.ones(5) / 5, mode="same")
+
+    top = int(ys.min())
+    reference = np.median(contrast[top:max(top + 40, int(np.percentile(ys, 90)))])
+    if reference <= 0:
+        return None
+
+    threshold = reference * texture_drop
+    waterline = None
+    below = 0
+    for y in range(top, len(contrast)):
+        if contrast[y] >= threshold:
+            waterline = y
+            below = 0
+        else:
+            below += 1
+            # A few dim rows are just a wide black band; a sustained run is water.
+            if waterline is not None and below >= sustain_rows:
+                break
+
+    return waterline
 
 def detect_yellow_region_fused(image, x_start=225, x_end=390):
     """Enhanced yellow detection with specialized water level detection."""
