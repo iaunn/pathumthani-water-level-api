@@ -4,6 +4,8 @@ import requests
 import os
 import warnings
 import json
+import threading
+import time
 from flask import Flask, jsonify, send_from_directory, request, render_template
 from datetime import datetime
 from flask_caching import Cache
@@ -68,6 +70,72 @@ def save_calibration_to_file(points):
 
 # Load from file on startup
 load_calibration()
+
+# =========================
+# History Tracking
+# =========================
+HISTORY_FILE = "history.json"
+history_data = []
+MAX_HISTORY_RECORDS = 288 # 24 hours at 5 min intervals
+
+def load_history():
+    global history_data
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history_data = json.load(f)
+        except Exception as e:
+            print(f"Error loading history: {e}")
+
+def save_history():
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history_data[-MAX_HISTORY_RECORDS:], f)
+    except Exception as e:
+        print(f"Error saving history: {e}")
+
+load_history()
+
+def background_tracker():
+    """Runs every 5 minutes to capture and record the water level."""
+    while True:
+        try:
+            print("Running background water level check...")
+            video_url = get_video_url()
+            if video_url:
+                frame = capture_last_frame_from_video(video_url)
+                if frame is not None:
+                    aligned_frame = align_image(frame)
+                    raw_y = detect_water_level_on_gauge(aligned_frame)
+                    if raw_y is None:
+                        raw_y = detect_yellow_regions_fused(aligned_frame)
+                    
+                    y = smooth_detection(raw_y)
+                    
+                    if y is not None:
+                        level = float(pixel_to_level(float(y)))
+                        
+                        # Save image specifically for history
+                        timestamp = int(time.time())
+                        filename = save_image(aligned_frame, "history", f"_{timestamp}")
+                        
+                        # Add to history
+                        history_data.append({
+                            "timestamp": timestamp,
+                            "level": round(level, 2),
+                            "image": filename
+                        })
+                        save_history()
+                        rotate_images()
+                        print(f"Background check successful. Level: {level:.2f}m")
+        except Exception as e:
+            print(f"Background tracker error: {e}")
+            
+        time.sleep(300) # Wait 5 minutes
+
+# Start the background thread
+tracker_thread = threading.Thread(target=background_tracker, daemon=True)
+tracker_thread.start()
 
 # Useful bounds
 def get_bounds():
@@ -1206,6 +1274,16 @@ def get_calibration_frame():
         })
     except Exception as e:
         return jsonify({"error": f"Failed to get calibration frame: {str(e)}"}), 500
+
+@app.route('/')
+def dashboard():
+    """Serve the main dashboard."""
+    return render_template('index.html')
+
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    """Return the historical water level data."""
+    return jsonify(history_data)
 
 # Run Flask app
 if __name__ == '__main__':

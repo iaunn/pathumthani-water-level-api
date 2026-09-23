@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Water Level Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; color: #333; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1400px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; min-width: 300px; }
+        .current-status { text-align: center; }
+        .level-text { font-size: 48px; font-weight: bold; color: #007bff; margin: 10px 0; }
+        .level-time { color: #6c757d; font-size: 14px; }
+        .img-container { width: 100%; max-height: 400px; overflow: hidden; border-radius: 8px; margin-top: 15px; background: #000; display: flex; justify-content: center; align-items: center; }
+        .img-container img { max-width: 100%; max-height: 400px; object-fit: contain; }
+        .chart-container { position: relative; height: 400px; width: 100%; }
+        .btn { display: inline-block; padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 10px; }
+        .btn:hover { background: #218838; }
+        .footer { text-align: center; margin-top: 40px; color: #6c757d; font-size: 14px; }
+        
+        .history-thumbnails { display: flex; gap: 10px; overflow-x: auto; margin-top: 20px; padding-bottom: 10px; }
+        .thumbnail { flex: 0 0 100px; cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+        .thumbnail:hover, .thumbnail.active { border-color: #007bff; }
+        .thumbnail img { width: 100%; height: 60px; object-fit: cover; display: block; }
+        .thumbnail-time { text-align: center; font-size: 11px; padding: 2px; background: #eee; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Pathumthani Water Level</h1>
+    <p>Real-time AI monitoring dashboard</p>
+</div>
+
+<div class="container">
+    <div class="card" style="flex: 0 0 400px;">
+        <h3>Current Status</h3>
+        <div class="current-status">
+            <div class="level-text" id="currentLevel">-- m</div>
+            <div class="level-time" id="currentTime">Loading...</div>
+            <a href="/calibrate" class="btn" style="background:#6c757d; font-size: 12px; padding: 6px 12px;">Calibration Settings</a>
+        </div>
+        
+        <div class="img-container">
+            <img id="currentImage" src="" alt="Water Level Camera" style="display: none;">
+        </div>
+        
+        <h4 style="margin-top: 20px;">Recent Captures</h4>
+        <div class="history-thumbnails" id="thumbnailContainer">
+            <!-- Thumbnails injected here -->
+        </div>
+    </div>
+    
+    <div class="card" style="flex: 2;">
+        <h3>Water Level History (Last 24 Hours)</h3>
+        <div class="chart-container">
+            <canvas id="historyChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="footer">
+    Data is automatically collected every 5 minutes.
+</div>
+
+<script>
+    let chart;
+    
+    function formatTime(timestamp) {
+        return new Date(timestamp * 1000).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    function setMainDisplay(level, timestamp, imageUrl) {
+        document.getElementById('currentLevel').innerText = level ? level.toFixed(2) + ' m' : 'N/A';
+        document.getElementById('currentTime').innerText = "Last updated: " + new Date(timestamp * 1000).toLocaleString('th-TH');
+        const img = document.getElementById('currentImage');
+        if (imageUrl) {
+            img.src = imageUrl;
+            img.style.display = 'block';
+        }
+    }
+
+    async function loadData() {
+        try {
+            // Fetch history
+            const histRes = await fetch('/api/history');
+            const history = await histRes.json();
+            
+            if (history.length > 0) {
+                const latest = history[history.length - 1];
+                setMainDisplay(latest.level, latest.timestamp, '/images/' + latest.image);
+                
+                // Draw chart
+                drawChart(history);
+                
+                // Draw thumbnails (last 10)
+                drawThumbnails(history.slice(-10).reverse());
+            } else {
+                document.getElementById('currentTime').innerText = "No data yet. Waiting for first capture...";
+            }
+        } catch (e) {
+            console.error(e);
+            document.getElementById('currentTime').innerText = "Error loading data.";
+        }
+    }
+
+    function drawChart(history) {
+        const ctx = document.getElementById('historyChart').getContext('2d');
+        
+        const labels = history.map(item => formatTime(item.timestamp));
+        const data = history.map(item => item.level);
+        
+        if (chart) chart.destroy();
+        
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Water Level (m)',
+                    data: data,
+                    borderColor: '#007bff',
+                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        title: { display: true, text: 'Level (Meters)' },
+                        // min: 2.0, // optional fixed scale
+                        // max: 4.5
+                    },
+                    x: {
+                        ticks: { maxTicksLimit: 12 }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+    }
+
+    function drawThumbnails(recentHistory) {
+        const container = document.getElementById('thumbnailContainer');
+        container.innerHTML = '';
+        
+        recentHistory.forEach((item, index) => {
+            const div = document.createElement('div');
+            div.className = 'thumbnail' + (index === 0 ? ' active' : '');
+            div.innerHTML = `
+                <img src="/images/${item.image}" alt="time">
+                <div class="thumbnail-time">${formatTime(item.timestamp)}</div>
+            `;
+            div.onclick = () => {
+                // Remove active class from all
+                document.querySelectorAll('.thumbnail').forEach(t => t.classList.remove('active'));
+                div.classList.add('active');
+                setMainDisplay(item.level, item.timestamp, '/images/' + item.image);
+            };
+            container.appendChild(div);
+        });
+    }
+
+    // Load immediately and refresh every 5 minutes
+    loadData();
+    setInterval(loadData, 300000);
+
+</script>
+</body>
+</html>
