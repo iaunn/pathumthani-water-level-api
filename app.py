@@ -133,10 +133,6 @@ def background_tracker():
             
         time.sleep(300) # Wait 5 minutes
 
-# Start the background thread
-tracker_thread = threading.Thread(target=background_tracker, daemon=True)
-tracker_thread.start()
-
 # Useful bounds
 def get_bounds():
     if CAL_POINTS:
@@ -1284,6 +1280,11 @@ def dashboard():
 def get_history():
     """Return the historical water level data."""
     return jsonify(history_data)
+
+# Started here, not next to background_tracker: the thread runs immediately and
+# would race the rest of this module, calling helpers that are not defined yet.
+tracker_thread = threading.Thread(target=background_tracker, daemon=True)
+tracker_thread.start()
 
 # Run Flask app
 if __name__ == '__main__':
