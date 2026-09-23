@@ -679,62 +679,37 @@ def detect_yellow_regions_fused(image, x_start=225, x_end=390):
     
     return None
 
-def detect_water_level_on_gauge(image, x_start=225, x_end=390):
+def detect_water_level_on_gauge(image, x_start=225, x_end=390,
+                                gap_window=60, gap_support=6):
     """
-    Specialized detection for water level on yellow gauge markers.
-    Focuses on finding the interface between water and air at gauge markings.
+    Find the waterline as the lowest row where the yellow gauge staff is still visible.
+
+    Works off a per-row profile rather than contours: the staff is broken up both by
+    its own black bands and by the arrow signs bolted across it, so any contour-based
+    pass splits into fragments and picks the wrong one. A row counts as the waterline
+    when at least `gap_support` of the `gap_window` rows above it also show gauge,
+    which bridges those occlusions while still rejecting speckle floating below.
     """
-    h = image.shape[0]
-    w = image.shape[1]
-    
-    # 1. ENHANCED GAUGE MARKER DETECTION
-    # Focus specifically on finding yellow background of the gauge
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    
-    # Tight yellow range for gauge background
+
+    # Deliberately tight: the muddy water sits at the same hue as the staff and is
+    # only separated by saturation, so loosening this makes the mask run off the
+    # bottom of the frame instead of stopping at the water.
     lower_gauge = np.array([20, 140, 120])
     upper_gauge = np.array([30, 255, 255])
     gauge_mask = cv2.inRange(hsv, lower_gauge, upper_gauge)
-    
-    # Restrict to ROI
+
     gauge_mask[:, :x_start] = 0
     gauge_mask[:, x_end:] = 0
-    
-    # Clean up the gauge mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))  # Vertical rectangular kernel
-    gauge_mask = cv2.morphologyEx(gauge_mask, cv2.MORPH_CLOSE, kernel)
-    gauge_mask = cv2.morphologyEx(gauge_mask, cv2.MORPH_OPEN, kernel)
-    
-    # Find gauge boundaries
-    contours, _ = cv2.findContours(gauge_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not contours:
+
+    gauge_rows = (gauge_mask > 0).sum(axis=1) >= 2
+    if gauge_rows.sum() < 20:
         return None
-    
-    # Filter contours that are likely the gauge (tall and relatively large)
-    valid_contours = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 500:
-            x, y, w_rect, h_rect = cv2.boundingRect(cnt)
-            if h_rect > w_rect: # Should be taller than wide
-                valid_contours.append(cnt)
-                
-    if not valid_contours:
-        # Fallback to the largest one
-        valid_contours = [max(contours, key=cv2.contourArea)]
-        
-    # Find the contour that extends furthest down
-    lowest_bottom = 0
-    for cnt in valid_contours:
-        x, y, w_rect, h_rect = cv2.boundingRect(cnt)
-        bottom = y + h_rect
-        if bottom > lowest_bottom:
-            lowest_bottom = bottom
-            
-    if lowest_bottom > 0:
-        return lowest_bottom
-        
+
+    for y in range(len(gauge_rows) - 1, -1, -1):
+        if gauge_rows[y] and gauge_rows[max(0, y - gap_window):y + 1].sum() >= gap_support:
+            return y
+
     return None
 
 def detect_yellow_region_fused(image, x_start=225, x_end=390):
