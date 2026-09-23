@@ -1,0 +1,13 @@
+# Secrets must never reach a published image: the Dockerfile does COPY . /app
+.env
+
+# Local-only state, replaced by object storage and MongoDB
+env/
+images/
+history.json
+
+.git
+.github
+__pycache__/
+*.pyc
+docker-compose.yml

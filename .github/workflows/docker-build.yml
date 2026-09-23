@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main  # Trigger the action on push to the main branch
+      - feature/object-storage-mongodb
   pull_request:
     branches:
       - main  # Optional: Trigger the action on pull requests to main
@@ -32,6 +33,7 @@ jobs:
 
       # Step 4: Log in to GitHub Docker registry
       - name: Log in to GitHub Docker registry
+        if: github.event_name != 'pull_request'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # Step 5: Create and use a new Buildx builder
@@ -42,15 +44,39 @@ jobs:
       - name: Inspect Buildx builder
         run: docker buildx inspect --bootstrap
 
-      # Step 7: Build and push Docker image for multiple platforms
+      # Step 7: Decide what this run publishes.
+      # main owns :latest; a feature branch publishes under its own name only, so
+      # it can never overwrite the image that deployments follow.
+      - name: Resolve image tags
+        id: tags
+        env:
+          BRANCH: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            # Nothing to publish yet: build both platforms purely to prove it still builds.
+            echo "args=--output type=cacheonly" >> "$GITHUB_OUTPUT"
+          else
+            case "$BRANCH" in
+              main) tag=latest ;;
+              # feature/object-storage-mongodb -> object-storage-mongodb
+              *)    tag="${BRANCH#feature/}" ;;
+            esac
+            echo "args=--push --tag ${IMAGE}:${tag} --tag ${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Publishing ${IMAGE}:${tag}"
+          fi
+
+      # Step 8: Build and push Docker image for multiple platforms
       - name: Build and Push Multi-Platform Docker Image
+        env:
+          BUILD_ARGS: ${{ steps.tags.outputs.args }}
         run: |
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            --push \
-            --tag ghcr.io/${{ github.repository }}:${{ github.sha }} \
-            --tag ghcr.io/${{ github.repository }}:latest .
+            $BUILD_ARGS .
 
-      # Optional Step 8: Clean up Buildx builder after build
+      # Optional Step 9: Clean up Buildx builder after build
       - name: Remove Buildx builder
+        if: always()
         run: docker buildx rm multi-builder
