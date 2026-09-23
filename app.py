@@ -119,11 +119,13 @@ def background_tracker():
                         timestamp = int(time.time())
                         filename = save_image(aligned_frame, "history", f"_{timestamp}")
                         
-                        # Add to history
+                        # "y" lets the dashboard draw the detected waterline over
+                        # the frame, so a wrong reading is visible rather than implied.
                         history_data.append({
                             "timestamp": timestamp,
                             "level": round(level, 2),
-                            "image": filename
+                            "image": filename,
+                            "y": int(y)
                         })
                         save_history()
                         rotate_images()

@@ -330,6 +330,35 @@
     .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
     .frame img:not([src]) { visibility: hidden; }
 
+    .waterline {
+        position: absolute;
+        left: 0;
+        right: 0;
+        display: none;
+        pointer-events: none;
+        transform: translateY(-50%);
+    }
+    .waterline.is-shown { display: block; }
+    .waterline-rule {
+        height: 2px;
+        background: #ffd400;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .55);
+    }
+    .waterline-tag {
+        position: absolute;
+        top: 50%;
+        left: 8px;
+        transform: translateY(-50%);
+        padding: 2px 7px;
+        border-radius: 5px;
+        background: rgba(0, 0, 0, .72);
+        color: #fff;
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: .01em;
+        white-space: nowrap;
+    }
+
     .skeleton {
         position: absolute; inset: 0;
         background: linear-gradient(100deg, var(--wash) 20%, color-mix(in srgb, var(--ink) 7%, transparent) 45%, var(--wash) 70%);
@@ -573,6 +602,10 @@
             <div class="frame">
                 <div class="skeleton" id="skeleton"></div>
                 <img id="frameImg" data-i18n-alt="camAlt" alt="Camera view of the river gauge">
+                <div class="waterline" id="waterline">
+                    <div class="waterline-rule"></div>
+                    <div class="waterline-tag" id="waterlineTag"></div>
+                </div>
             </div>
             <div class="strip" id="strip"></div>
         </div>
@@ -983,14 +1016,32 @@
         var img = $("frameImg");
         var src = "/images/" + shot.image;
         if (img.getAttribute("src") !== src) {
-            img.onload = function () { $("skeleton").style.display = "none"; };
+            img.onload = function () {
+                $("skeleton").style.display = "none";
+                placeWaterline(shot);
+            };
             img.onerror = function () { $("skeleton").style.display = "none"; };
             img.src = src;
+        } else {
+            placeWaterline(shot);
         }
 
         var isLatest = shot === state.history[state.history.length - 1];
         $("camCaption").textContent = (isLatest ? t("latest") + " \u00b7 " : "") +
             clockTime(shot.timestamp) + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
+    }
+
+    function placeWaterline(shot) {
+        var line = $("waterline");
+        var img = $("frameImg");
+        // older records predate the stored pixel, so they simply get no line
+        if (!shot || typeof shot.y !== "number" || !img.naturalHeight) {
+            line.classList.remove("is-shown");
+            return;
+        }
+        line.style.top = (shot.y / img.naturalHeight) * 100 + "%";
+        $("waterlineTag").textContent = shot.level.toFixed(2) + " " + t("unit");
+        line.classList.add("is-shown");
     }
 
     function renderStrip() {
