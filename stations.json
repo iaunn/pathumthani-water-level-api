@@ -5,8 +5,9 @@
       "id": "pathumthani",
       "name": {
         "en": "Pathumthani",
-        "th": "ปทุมธานี"
+        "th": "สวนเทพปทุม"
       },
+      "source": "http://101.109.253.60:8999",
       "playlist_url": "http://101.109.253.60:8999/playlist.m3u8",
       "roi": {
         "x_start": 225,
@@ -14,23 +15,12 @@
       }
     },
     {
-      "id": "pakkret",
+      "id": "pathumbridge1",
       "name": {
-        "en": "Pakkret",
-        "th": "ปากเกร็ด"
+        "en": "Pathum Thani Bridge 1",
+        "th": "สะพานปทุมธานี 1"
       },
-      "playlist_url": "https://www.thaiclouderp.com/video/pakkret-river.m3u8",
-      "roi": {
-        "x_start": 715,
-        "x_end": 808
-      }
-    },
-    {
-      "id": "pathumbridge",
-      "name": {
-        "en": "Pathum Thani Bridge",
-        "th": "สะพานปทุมธานี"
-      },
+      "source": "https://telemetry.dwr.go.th/reportCctv",
       "snapshot_url": "http://ta100219.dyndns.info:5001/jpg/image.jpg",
       "auth": "digest",
       "credentials_env": "STATION_PATHUMBRIDGE_CREDENTIALS",

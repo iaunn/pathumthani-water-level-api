@@ -26,6 +26,8 @@ class Station:
         self.name = cfg.get("name") or {"en": cfg["id"]}
         # A station is fed either an HLS playlist or a still-image endpoint. The
         # network cameras only offer the latter, behind digest auth.
+        # Where this feed comes from, credited in the dashboard footer.
+        self.source = cfg.get("source")
         self.playlist_url = cfg.get("playlist_url")
         self.snapshot_url = cfg.get("snapshot_url")
         if not (self.playlist_url or self.snapshot_url):
@@ -91,6 +93,7 @@ class Station:
         return {
             "id": self.id,
             "name": self.name,
+            "source": self.source,
             "roi": {"x_start": self.x_start, "x_end": self.x_end},
         }
 
