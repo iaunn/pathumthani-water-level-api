@@ -42,24 +42,31 @@ def init():
     print(f"MongoDB ready: database={db.name}")
 
 
-def add_reading(station_id, timestamp, level, image_url, y):
+def add_reading(station_id, timestamp, level, image_url, y, mode=None):
     timestamp = int(timestamp)
     level = round(float(level), 2)
 
-    _readings.insert_one({
+    doc = {
         "station": station_id,
         "timestamp": timestamp,
         "level": level,
         "image_url": image_url,
         "y": int(y),
         "created_at": datetime.now(timezone.utc),
-    })
+    }
+    # Which detector answered. Worth knowing afterwards: a "blind" reading came
+    # from texture alone, with no gauge colour in the region to check it against.
+    if mode:
+        doc["mode"] = mode
+
+    _readings.insert_one(doc)
 
 
 def latest_readings(station_id, limit):
     """Newest raw readings, oldest-first. Feeds the current value and the capture strip."""
     docs = _readings.find(
-        {"station": station_id}, {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1}
+        {"station": station_id},
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1}
     ).sort("timestamp", DESCENDING).limit(limit)
     return sorted(docs, key=lambda d: d["timestamp"])
 

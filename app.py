@@ -118,16 +118,26 @@ def background_tracker(station):
                 with station.lock:
                     aligned_frame = align_image(station, frame)
                     aligned_segment = [align_image(station, f) for f in segment] or None
+                    meta = {}
                     raw_y = detect_water_level_on_gauge(
                         aligned_frame, station.x_start, station.x_end,
                         y_start=station.y_start, y_end=station.y_end,
-                        frames=aligned_segment)
-                    if raw_y is None:
-                        raw_y = detect_yellow_regions_fused(
-                            aligned_frame, station.x_start, station.x_end,
-                            station.y_start, station.y_end)
+                        frames=aligned_segment, meta=meta)
+                    # Nothing behind it. The gauge detector refusing -- the
+                    # colour check failed, or the region holds no staff -- is
+                    # the honest answer, and the cascade that used to run here
+                    # only ever guessed: it reported 885 px with the surface
+                    # at 646, and 742 px where the staff met the water at 985.
 
-                    y = smooth_detection(station, raw_y)
+                    # Which detector answers is worth keeping with the reading:
+                    # a blind number has no gauge colour behind it.
+                    station.detection_mode = (meta.get("mode")
+                                              if raw_y is not None else "none")
+                    # Smooth only an observation. When the detector declines,
+                    # smoothing would hand back a value carried from earlier
+                    # cycles, and five-minute repeats would draw a flat line
+                    # over a gap that ought to be visible as a gap.
+                    y = smooth_detection(station, raw_y) if raw_y is not None else None
 
                 if y is not None:
                     level = float(pixel_to_level(station, float(y)))
@@ -137,7 +147,8 @@ def background_tracker(station):
 
                     # "y" lets the dashboard draw the detected waterline over
                     # the frame, so a wrong reading is visible rather than implied.
-                    database.add_reading(station.id, timestamp, level, image_url, y)
+                    database.add_reading(station.id, timestamp, level, image_url, y,
+                                          mode=station.detection_mode)
                     database.prune_readings(station.id, RETENTION_DAYS)
                     rotate_images(station)
                     print(f"[{station.id}] check successful. Level: {level:.2f}m")
@@ -226,6 +237,12 @@ def level_to_pixel(station, level_m: float) -> float:
 # =========================
 # Homography Alignment
 # =========================
+# Warping every frame onto a stored baseline costs an ORB pass and a warp per
+# capture, plus a baseline upload each time the calibration view opens. A camera
+# bolted in place never drifts, so HOMOGRAPHY_ENABLED=false skips all of that and
+# detection runs on the frame exactly as it came.
+HOMOGRAPHY_ENABLED = os.getenv("HOMOGRAPHY_ENABLED", "true").lower() not in ("false", "0", "no")
+
 def _adopt_reference(station, frame):
     """Hold `frame` in memory as the station's homography baseline."""
     gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -253,6 +270,11 @@ def init_reference_frame(station, frame):
 
 def align_image(station, frame):
     """Align the given frame to the station's reference frame using ORB feature matching."""
+    if not HOMOGRAPHY_ENABLED:
+        # Flag off: the camera does not move, so there is no offset to undo --
+        # and no reference frame to fetch or adopt either.
+        return frame
+
     if station.reference["image"] is None:
         init_reference_frame(station, frame)
         return frame # First frame is reference
@@ -423,8 +445,9 @@ def detect_yellow_region_enhanced(image, x_start=225, x_end=390, y_start=0, y_en
                             minLineLength=30, maxLineGap=10)
     
     if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
+        # OpenCV 5 returns HoughLinesP as (N, 4); OpenCV 4 returned (N, 1, 4),
+        # which is what line[0] was written against. Reshaping accepts both.
+        for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
             # Focus on relatively horizontal lines
             if x_start <= min(x1, x2) and max(x1, x2) <= x_end:
                 angle = np.arctan2(y2-y1, x2-x1) * 180 / np.pi
@@ -678,8 +701,8 @@ def detect_yellow_regions_fused(image, x_start=225, x_end=390, y_start=0, y_end=
     
     if lines is not None:
         candidates = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
+        # (N, 4) on OpenCV 5, (N, 1, 4) on 4 -- reshape takes either.
+        for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
             
             # Check if line is in ROI and roughly horizontal
             mid_x = int((x1 + x2) / 2)
@@ -729,6 +752,34 @@ def _yellow_column(image, x_start, x_end, y_start=0, y_end=None):
     if right - left < 6:
         left, right = max(0, left - 4), right + 4
     return left, right, int(ys.min()), int(np.percentile(ys, 90))
+
+
+def _loose_yellow_staff(image, x_start, x_end, y_start=0, y_end=None):
+    """
+    Is there a yellow staff in the box, even one too pale to measure?
+
+    Heavy rain drops the paint's saturation below the reading mask -- p50 79 on
+    one frame, against 226 when dry -- so the strict pass finds nothing and the
+    colour-blind fallback would take over and measure the platform behind the
+    staff instead. This pass only has to separate painted rows from incidental
+    yellow, which shape does: the fraction of rows carrying at least eight
+    yellow pixels measured 0.96 for a washed-out staff and 0.42-0.57 for wet
+    ones, against 0.00 for the box around a white/red staff and none at all
+    for a night frame.
+    """
+    ys, ye = _roi_rows(image, y_start, y_end)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([20, 40, 120]), np.array([30, 255, 255]))
+    mask[:, :x_start] = 0
+    mask[:, x_end:] = 0
+    mask[:ys] = 0
+    mask[ye:] = 0
+
+    rows, yy = (mask > 0).sum(axis=1), np.nonzero(mask)[0]
+    if len(yy) == 0:
+        return False
+    y0, y1 = int(yy.min()), int(yy.max())
+    return float((rows[y0:y1 + 1] >= 8).mean()) >= 0.25
 
 
 def _banding_column(image, x_start, x_end, y_start=0, y_end=None):
@@ -787,9 +838,41 @@ def _banding_column(image, x_start, x_end, y_start=0, y_end=None):
     return left, right, int(top), int(top + (bottom - top) * 0.6)
 
 
+def _gauge_mask(image, left, right):
+    """Rows of the painted staff and nothing else: yellow hue, saturated past
+    the murk, and bright.
+
+    Brightness is the part that survives weather. On one Rangsit pair the staff
+    read S p50 226 on a clear frame and 79 in heavy rain -- washed clean out of
+    any saturation cut that would still exclude the reflection -- while staying
+    at V p50 254 against the reflection's 144. Hue and saturation alone hold
+    only when the light does.
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([18, 70, 200]), np.array([35, 255, 255]))
+    return mask[:, left:right + 1]
+
+
+def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
+               min_above=20, max_below=80):
+    """Whether the staff's colour stops at `waterline` instead of carrying on.
+
+    The reflection never passes the mask (S p50 84-85 against the staff's 226)
+    and neither does silted submerged paint, so above a true surface the staff
+    is yellow and below it there is none. A dip mid-staff has yellow continuing
+    underneath it, which is what tells a graduation band from the waterline.
+    False means the caller should keep walking rather than settle.
+    """
+    above = int((mask[max(top, waterline - lookback):waterline + 1] > 0).sum())
+    if above < min_above:
+        return False          # not standing on the gauge at all
+    under = int((mask[waterline + 1:min(end, waterline + 1 + lookahead)] > 0).sum())
+    return under <= max_below
+
+
 def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=None,
                                 frames=None, texture_drop=0.5, sustain_rows=9,
-                                motion_ratio=3.0):
+                                motion_ratio=3.0, meta=None):
     """
     Find the waterline by where the gauge staff stops looking like a gauge staff.
 
@@ -812,13 +895,43 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     static, so its rows vary by 0 across frames while the water below varies by
     9; the correction only applies where that gap is real, and is inert on the
     muddy rivers that never reflect.
+
+    Colour then returns as a check rather than as the answer: the reading only
+    stands where the staff's own bright yellow stops. Texture alone has two
+    ways to be wrong in the same direction. A wide black graduation band
+    collapses it just as water does, and in rain the water keeps its texture so
+    the scan runs straight past the real surface -- measured at y501 and y918
+    against a true line of y646. Both sit where the staff is no longer yellow,
+    so both are rejected and the station reports nothing rather than something
+    plausible and wrong. A column found without any yellow (a white/red staff,
+    a night frame in infrared) has no colour to check against and is left as
+    it was; `meta["mode"]` records which of the two ran.
     """
     ys, ye = _roi_rows(image, y_start, y_end)
-    column = (_yellow_column(image, x_start, x_end, ys, ye)
-              or _banding_column(image, x_start, x_end, ys, ye))
+    yellow = _yellow_column(image, x_start, x_end, ys, ye)
+    if yellow is None and _loose_yellow_staff(image, x_start, x_end, ys, ye):
+        # The staff is in the box but washed out of the reading mask -- heavy
+        # rain took its saturation to p50 79 on a frame where it stayed bright.
+        # Texture alone would then measure whatever else shares the box: it
+        # reported 862 px with the surface at 646. Decline instead, and say it
+        # was the colour check that declined.
+        if meta is not None:
+            meta["mode"] = "gauge"
+        return None
+    column = yellow or _banding_column(image, x_start, x_end, ys, ye)
     if column is None:
+        if meta is not None:
+            meta["mode"] = "none"
         return None
     left, right, top, ref_end = column
+    if meta is not None:
+        # "gauge" found the painted staff and can be checked against its colour;
+        # "blind" found no yellow and is measuring texture alone.
+        meta["mode"] = "gauge" if yellow else "blind"
+
+    # The staff's own bright yellow, for checking where the reading lands.
+    # Skipped for a colourless column: there is nothing to check it with.
+    mask = _gauge_mask(image, left, right) if yellow else None
 
     strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
     contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
@@ -839,8 +952,13 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
             below += 1
             # A few dim rows are just a wide black band; a sustained run is water.
             if waterline is not None and below >= sustain_rows:
-                collapsed = True
-                break
+                if mask is None or _mask_ends(mask, waterline, top, ye):
+                    collapsed = True
+                    break
+                # Gauge-yellow is still there under this dip: the staff carries
+                # on, so the dip was a graduation band or textured water, not
+                # the surface. Walk past it.
+                below = 0
 
     # Reaching the bottom with the staff never giving out means no waterline was
     # found -- a dark frame, or a gauge that leaves the picture. Report nothing
@@ -881,12 +999,14 @@ def _correct_for_reflection(frames, left, right, top, waterline, motion_ratio):
     return waterline
 
 
-def detect_yellow_region_fused(image, x_start=225, x_end=390, y_start=0, y_end=None):
+def detect_yellow_region_fused(image, x_start=225, x_end=390, y_start=0, y_end=None,
+                               meta=None):
     """Enhanced yellow detection with specialized water level detection."""
     ys, ye = _roi_rows(image, y_start, y_end)
 
     # First try specialized water level detection on gauge
-    result = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye)
+    result = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye,
+                                         meta=meta)
     if result is not None:
         print(f"Water level detected on gauge: {result}")
         return result
@@ -1318,9 +1438,17 @@ def get_status(station_id=None):
         aligned_frame = align_image(station, original_frame)
 
         # Perform enhanced detection with smoothing
-        raw_detection = detect_yellow_region_fused(
+        meta = {}
+        raw_detection = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
-            station.y_start, station.y_end)
+            y_start=station.y_start, y_end=station.y_end, meta=meta)
+        # The same detector the tracker uses: "gauge" (colour + texture) or
+        # "blind" (texture only), and nothing when it declines to answer. The
+        # cascade that used to sit behind this endpoint guessed -- 885 px with
+        # the surface at 646 -- so it stays in /debug, where guesses are the
+        # point.
+        station.detection_mode = (meta.get("mode") if raw_detection is not None
+                                  else "none")
         y_lowest_yellow = smooth_detection(station, raw_detection)
 
     if y_lowest_yellow is None:
@@ -1340,6 +1468,7 @@ def get_status(station_id=None):
             "processed_image_url": None,
             "water_level_line_image_url": None,
             "timestamp": unix_timestamp,
+            "detection_mode": station.detection_mode,
             "note": "Yellow region not detected, using previous water level"
         })
 
@@ -1367,6 +1496,7 @@ def get_status(station_id=None):
         "processed_image_url": processed_image_url,
         "water_level_line_image_url": water_level_line_image_url,
         "timestamp": unix_timestamp,
+        "detection_mode": station.detection_mode,
         "calibration_points": station.cal_points
     })
 
@@ -1425,9 +1555,12 @@ def debug_water_level(station_id=None):
         aligned_frame = align_image(station, original_frame)
         
         # Run water level detection
+        meta = {}
         detected_y = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
-            y_start=station.y_start, y_end=station.y_end)
+            y_start=station.y_start, y_end=station.y_end, meta=meta)
+        station.detection_mode = (meta.get("mode") if detected_y is not None
+                                  else "none")
         
         # Create water level debug visualization
         debug_image = visualize_water_level_debug(
@@ -1447,6 +1580,7 @@ def debug_water_level(station_id=None):
             "detected_y_pixel": detected_y,
             "water_level_meters": water_level,
             "detection_success": detected_y is not None,
+            "detection_mode": meta.get("mode"),
             "calibration_points": station.cal_points
         })
         
@@ -1585,9 +1719,12 @@ def get_calibration_frame(station_id=None):
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
-        # Set this new frame as the reference for homography
-        with station.lock:
-            set_reference_frame(station, original_frame)
+        # Set this new frame as the reference for homography -- skipped when the
+        # flag has it off: there is no baseline to keep, and turning it back on
+        # later adopts the next frame on its own.
+        if HOMOGRAPHY_ENABLED:
+            with station.lock:
+                set_reference_frame(station, original_frame)
 
         # Save frame to return to UI
         image_url = store_frame(station, original_frame, "calibration_frame")
