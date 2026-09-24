@@ -5,6 +5,7 @@ on:
     branches:
       - main  # Trigger the action on push to the main branch
       - feature/object-storage-mongodb
+      - feature/platform  # publishes :platform
   pull_request:
     branches:
       - main  # Optional: Trigger the action on pull requests to main
@@ -61,6 +62,7 @@ jobs:
             case "$BRANCH" in
               main) tag=latest ;;
               # feature/object-storage-mongodb -> object-storage-mongodb
+              # feature/platform -> platform
               *)    tag="${BRANCH#feature/}" ;;
             esac
             echo "args=--push --tag ${IMAGE}:${tag} --tag ${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
