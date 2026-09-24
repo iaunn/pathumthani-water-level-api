@@ -16,10 +16,26 @@
       }
     },
     {
+      "id": "rangsit",
+      "name": {
+        "en": "Rangsit",
+        "th": "รังสิต"
+      },
+      "staff_paint": "yellow",
+      "source": "https://ipcamlive.com/68c13eaeec104",
+      "snapshot_url": "https://ipcamlive.com/player/snapshot.php?alias=68c13eaeec104",
+      "roi": {
+        "x_start": 807,
+        "x_end": 913,
+        "y_start": 306,
+        "y_end": 1080
+      }
+    },
+    {
       "id": "pathumbridge1",
       "name": {
-        "en": "Pathum Thani Bridge 1",
-        "th": "สะพานปทุมธานี 1"
+        "en": "Pathum Thani Bridge 1 (Accuracy Test)",
+        "th": "สะพานปทุมธานี 1 (ทดสอบความแม่นยำ)"
       },
       "staff_paint": "none",
       "source": "https://telemetry.dwr.go.th/reportCctv",
@@ -34,8 +50,8 @@
     {
       "id": "pathumbridge2",
       "name": {
-        "en": "Pathum Thani Bridge 2",
-        "th": "สะพานปทุมธานี 2"
+        "en": "Pathum Thani Bridge 2 (Accuracy Test)",
+        "th": "สะพานปทุมธานี 2 (ทดสอบความแม่นยำ)"
       },
       "staff_paint": "none",
       "source": "https://telemetry.dwr.go.th/reportCctv",
@@ -46,22 +62,6 @@
         "x_start": 933,
         "x_end": 1084,
         "y_start": 169,
-        "y_end": 1080
-      }
-    },
-    {
-      "id": "rangsit",
-      "name": {
-        "en": "Rangsit",
-        "th": "รังสิต"
-      },
-      "staff_paint": "yellow",
-      "source": "https://ipcamlive.com/68c13eaeec104",
-      "snapshot_url": "https://ipcamlive.com/player/snapshot.php?alias=68c13eaeec104",
-      "roi": {
-        "x_start": 807,
-        "x_end": 913,
-        "y_start": 306,
         "y_end": 1080
       }
     }
