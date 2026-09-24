@@ -870,6 +870,30 @@ def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
     return under <= max_below
 
 
+def _mask_bottom(mask, top, end, coverage=0.15, sustain=4, window=12):
+    """The deepest row where the staff's own paint still covers the column.
+
+    Where the water is still enough to mirror the staff, the reflection carries
+    the graduation bands with it, so it is as textured as the staff and the
+    contrast scan walks straight into it. The paint does not go with it.
+    Measured down the Rangsit staff, the mask holds 70% of the column width on
+    the staff against 4% on the reflection immediately beneath it, so a coverage
+    floor separates the two without a brightness cut that would move with the
+    light. The run requirement keeps a few specular pixels on a wave crest from
+    reading as staff: in direct sun the reflection's first rows passed a bare
+    three-pixel test and put the bottom 30px low.
+    """
+    rows = (mask > 0).sum(axis=1)
+    need = max(4, int(round(mask.shape[1] * coverage)))
+    bottom = None
+    for y in range(top, min(end, len(rows))):
+        if rows[y] < need:
+            continue
+        if int((rows[max(top, y - window + 1):y + 1] >= need).sum()) >= sustain:
+            bottom = y
+    return bottom
+
+
 def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=None,
                                 frames=None, texture_drop=0.5, sustain_rows=9,
                                 motion_ratio=3.0, meta=None):
@@ -889,12 +913,20 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     relative to the staff's own rows, so it holds as the light changes.
 
     Where the water is still enough to mirror the staff the texture does not
-    collapse at all: the reflection measured 77-84% of the staff's contrast well
-    below the surface, and no threshold separates them. Pass `frames` from the
-    same segment and the reflection gives itself away by moving. The staff is
-    static, so its rows vary by 0 across frames while the water below varies by
-    9; the correction only applies where that gap is real, and is inert on the
-    muddy rivers that never reflect.
+    collapse at all: the reflection carries the graduation bands down with it and
+    measured 102-128 against the staff's 127 right across the surface, so no
+    threshold separates them. Paint does not reflect, though. The bright-yellow
+    mask covers 70% of the column on the staff and 4% on the water beneath it, so
+    the row where that coverage stops is the surface, and it is read without any
+    threshold that moves with the light. The scan is bounded by it and falls back
+    to it, which is what `_mask_bottom` is for.
+
+    Motion is the other tell, where the camera will give it: the staff is static,
+    so its rows vary by 0 across frames of one segment while rippling water below
+    varies by 9. Pass `frames` and `_correct_for_reflection` uses it. It is inert
+    on the muddy rivers that never reflect -- and on any camera that serves the
+    same still repeatedly, which is why the paint edge and not motion is what
+    Rangsit rests on.
 
     Colour then returns as a check rather than as the answer: the reading only
     stands where the staff's own bright yellow stops. Texture alone has two
@@ -944,7 +976,17 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     waterline = None
     below = 0
     collapsed = False
-    for y in range(top, min(len(contrast), ye)):
+    # Where the paint gives out. The contrast scan is allowed a little way past
+    # it, because submerged paint silts over and the colour can stop high -- the
+    # 10-15cm that first motivated the texture scan is 22px at Pathumthani -- but
+    # not far enough to reach a reflection: at Rangsit the scan's first candidate
+    # row sat 137px below the paint. Taken as a fraction of the staff's own
+    # length those are 0.06 and 0.47, so the budget comes from that rather than
+    # from a pixel count, which would mean different things at 480 and 1080 lines.
+    bottom = _mask_bottom(mask, top, ye) if mask is not None else None
+    limit = ye if bottom is None else min(ye, bottom + int((bottom - top) * 0.15) + 1)
+
+    for y in range(top, min(len(contrast), limit)):
         if contrast[y] >= threshold:
             waterline = y
             below = 0
@@ -960,13 +1002,20 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
                 # the surface. Walk past it.
                 below = 0
 
-    # Reaching the bottom with the staff never giving out means no waterline was
-    # found -- a dark frame, or a gauge that leaves the picture. Report nothing
-    # rather than the last row scanned.
+    # The scan finding no collapse is not the same as there being no waterline.
+    # On still water there is nothing for it to find: the reflection's contrast
+    # measured 102-128 against the staff's 127 right across the surface. The
+    # paint stopping is itself the observation -- it is the row where the staff
+    # enters the water -- and it held to within 3px across 19 Rangsit frames
+    # while the scan was reporting a spread of 276px, 0.8m of river that never
+    # moved. Without a painted column there is nothing to fall back on, and a
+    # dark frame or a gauge out of shot still reports nothing.
     if not collapsed:
-        return None
+        return bottom
 
-    if waterline is None or not frames:
+    # One frame, or the same frame several times over, carries no motion to
+    # measure; the correction would read stillness everywhere and stand aside.
+    if waterline is None or not frames or len(frames) < 2:
         return waterline
 
     return _correct_for_reflection(frames, left, right, top, waterline, motion_ratio)
@@ -1234,12 +1283,19 @@ def fetch_snapshot(station):
 
 def capture_snapshots(station, count=6, spacing=0.4):
     """
-    Several stills in quick succession.
+    Several stills in quick succession, with repeats dropped.
 
-    A snapshot endpoint hands back one frame per request, but the waterline needs
-    a few moments apart to tell moving water from a reflection of the staff.
+    A snapshot endpoint hands back one frame per request, and telling moving
+    water from a reflection of the staff needs frames that are actually a moment
+    apart. Not every endpoint has one to give: Rangsit's refreshes its still once
+    every 62 seconds, so six requests 0.4s apart came back as six byte-identical
+    JPEGs. Handing those on as a segment is worse than handing on nothing,
+    because the reflection test reads no motion anywhere and concludes the water
+    is still. Returning only what actually differs keeps that test honest, and
+    the detector requires two frames before it runs.
     """
     frames = []
+    repeats = 0
     for i in range(count):
         if i:
             time.sleep(spacing)
@@ -1250,6 +1306,14 @@ def capture_snapshots(station, count=6, spacing=0.4):
             break
         if frame is None:
             break
+        if frames and np.array_equal(frames[-1], frame):
+            repeats += 1
+            # Asking a camera that is plainly not refreshing costs it requests
+            # and the tracker seconds: six of these took 14s against Rangsit.
+            if repeats >= 2:
+                break
+            continue
+        repeats = 0
         frames.append(frame)
     return frames
 
