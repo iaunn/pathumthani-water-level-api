@@ -133,7 +133,11 @@ def background_tracker(station):
                     # a blind number has no gauge colour behind it.
                     station.detection_mode = (meta.get("mode")
                                               if raw_y is not None else "none")
-                    y = smooth_detection(station, raw_y)
+                    # Smooth only an observation. When the detector declines,
+                    # smoothing would hand back a value carried from earlier
+                    # cycles, and five-minute repeats would draw a flat line
+                    # over a gap that ought to be visible as a gap.
+                    y = smooth_detection(station, raw_y) if raw_y is not None else None
 
                 if y is not None:
                     level = float(pixel_to_level(station, float(y)))
