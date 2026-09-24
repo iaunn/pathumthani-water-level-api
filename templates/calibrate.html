@@ -507,6 +507,13 @@
             min-width: 0;
         }
 
+        .roi-fields {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
         .card-actions {
             display: flex;
             gap: 8px;
@@ -696,12 +703,65 @@
             <div class="stage-foot">
                 <span class="legend"><i class="lg-point"></i> Calibration point · drag to adjust</span>
                 <span class="legend"><i class="lg-det"></i> Detected waterline</span>
-                <span class="legend"><i class="lg-roi"></i> Detection region</span>
+                <span class="legend"><i class="lg-roi"></i> Detection region · drag edges or corners</span>
                 <span id="testResult" class="test-result"></span>
             </div>
         </section>
 
         <aside class="sidebar">
+            <section class="card">
+                <div class="card-head">
+                    <h2>Detection region</h2>
+                    <span>
+                        <span class="dirty-pill" id="roiDirtyPill">Unsaved</span>
+                        <span class="count-pill" id="roiWidth">&mdash;</span>
+                    </span>
+                </div>
+                <p class="fineprint" style="margin-top:4px;">
+                    The detector only looks inside this box. Drag an edge or a
+                    corner on the image, or type exact pixels. Kept in the
+                    database, so aiming a camera needs no commit &mdash;
+                    <strong>Reset</strong> goes back to stations.json.
+                </p>
+
+                <div class="roi-fields">
+                    <label>
+                        <span class="field-label">Left (x)</span>
+                        <div class="num-wrap">
+                            <input type="number" step="1" id="roiStart" disabled>
+                            <span class="unit">px</span>
+                        </div>
+                    </label>
+                    <label>
+                        <span class="field-label">Right (x)</span>
+                        <div class="num-wrap">
+                            <input type="number" step="1" id="roiEnd" disabled>
+                            <span class="unit">px</span>
+                        </div>
+                    </label>
+                    <label>
+                        <span class="field-label">Top (y)</span>
+                        <div class="num-wrap">
+                            <input type="number" step="1" id="roiTop" disabled>
+                            <span class="unit">px</span>
+                        </div>
+                    </label>
+                    <label>
+                        <span class="field-label">Bottom (y)</span>
+                        <div class="num-wrap">
+                            <input type="number" step="1" id="roiBottom" disabled>
+                            <span class="unit">px</span>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="card-actions">
+                    <button class="btn" type="button" id="roiResetBtn" onclick="resetRoi()" disabled>Reset to config</button>
+                    <button class="btn btn-primary" type="button" id="roiSaveBtn" onclick="saveRoi()" disabled>Save region</button>
+                </div>
+                <div class="marker-status" id="roiStatus" role="status"></div>
+            </section>
+
             <section class="card">
                 <div class="card-head">
                     <h2>Calibration points</h2>
@@ -777,10 +837,19 @@
     let imageObj = null;
     let points = [];
     let roi = null;
+    let roiConfig = null;      // the region stations.json asks for
+    let roiSource = "config";  // "config" until something has been saved
+    let roiDirty = false;
     let isDragging = false;
     let dragIndex = -1;
     let hoverIndex = -1;
+    let dragRoi = null;        // "left" | "right" edge being dragged
     let dirty = false;
+
+    // Matches Station.MIN_ROI_WIDTH / MIN_ROI_HEIGHT server-side, so the page
+    // cannot save a region the API will reject.
+    const MIN_ROI_WIDTH = 8;
+    const MIN_ROI_HEIGHT = 8;
 
     let testDetectedPixel = null;
     let testDetectedLevel = null;
@@ -850,6 +919,184 @@
         document.getElementById("dirtyPill").classList.toggle("is-shown", on);
     }
 
+    function setRoiDirty(on) {
+        roiDirty = on;
+        document.getElementById("roiDirtyPill").classList.toggle("is-shown", on);
+        document.getElementById("roiSaveBtn").disabled = !on;
+    }
+
+    /* ---------- detection region ---------- */
+
+    // Each edge of the box is one key of the region, and has an input named
+    // after it. x runs left to right, y top to bottom, as in the canvas.
+    const ROI_INPUTS = {
+        x_start: "roiStart", x_end: "roiEnd",
+        y_start: "roiTop",   y_end: "roiBottom"
+    };
+
+    async function loadRoi() {
+        try {
+            const res = await fetch(API + "/roi", { cache: "no-store" });
+            if (!res.ok) throw new Error("ROI responded " + res.status);
+            const data = await res.json();
+            roi = clampRoi(data.roi);
+            roiConfig = data.config;
+            roiSource = data.source;
+        } catch (e) {
+            console.error("Failed to load the detection region", e);
+            toast("Could not load the detection region.", "err");
+        }
+        syncRoiInputs();
+        render();
+    }
+
+    function syncRoiInputs() {
+        if (!roi) return;
+        for (const key in ROI_INPUTS) {
+            const el = document.getElementById(ROI_INPUTS[key]);
+            el.disabled = false;
+            // Do not overwrite what is being typed.
+            if (document.activeElement !== el) el.value = Math.round(roi[key]);
+        }
+
+        document.getElementById("roiWidth").textContent =
+            Math.round(roi.x_end - roi.x_start) + " × " +
+            Math.round(roi.y_end - roi.y_start) + " px";
+        // Only a saved override can be undone.
+        document.getElementById("roiResetBtn").disabled = roiSource === "config";
+    }
+
+    function clampRoi(next) {
+        const w = imageObj ? canvas.width : null;
+        const h = imageObj ? canvas.height : null;
+        const edge = (value, fallback) => {
+            const n = Math.round(Number(value));
+            return Number.isFinite(n) ? n : fallback;
+        };
+
+        let xs = Math.max(0, edge(next && next.x_start, 0));
+        let xe = edge(next && next.x_end, w === null ? 8192 : w);
+        let ys = Math.max(0, edge(next && next.y_start, 0));
+        let ye = edge(next && next.y_end, h === null ? 8192 : h);
+
+        if (w) { xs = Math.min(xs, w); xe = Math.min(xe, w); }
+        if (h) { ys = Math.min(ys, h); ye = Math.min(ye, h); }
+
+        if (xe - xs < MIN_ROI_WIDTH) xe = xs + MIN_ROI_WIDTH;
+        if (ye - ys < MIN_ROI_HEIGHT) ye = ys + MIN_ROI_HEIGHT;
+        if (w && xe > w) { xe = w; xs = Math.max(0, xe - MIN_ROI_WIDTH); }
+        if (h && ye > h) { ye = h; ys = Math.max(0, ye - MIN_ROI_HEIGHT); }
+
+        return { x_start: xs, x_end: xe, y_start: ys, y_end: ye };
+    }
+
+    // A bottom or right edge stored as "past the picture" reads as the frame's
+    // last row once the frame is here, which is what would be saved back.
+    function fitRoiToFrame() {
+        if (!roi || !imageObj) return;
+        roi = clampRoi(roi);
+        syncRoiInputs();
+    }
+
+    function applyRoiInputs() {
+        if (!roi) return;
+        const next = {};
+        for (const key in ROI_INPUTS) {
+            const value = parseInt(document.getElementById(ROI_INPUTS[key]).value, 10);
+            if (!isFinite(value)) { syncRoiInputs(); return; }
+            next[key] = value;
+        }
+
+        roi = clampRoi(next);
+        setRoiDirty(true);
+        syncRoiInputs();
+        render();
+    }
+
+    function moveRoiFeature(feature, pos) {
+        if (!roi) return;
+        const next = Object.assign({}, roi);
+        const maxX = imageObj ? canvas.width : Math.max(pos.x, roi.x_end);
+        const maxY = imageObj ? canvas.height : Math.max(pos.y, roi.y_end);
+
+        // A corner carries both of the edges it joins; a side only its own.
+        if (feature.indexOf("left") !== -1)
+            next.x_start = Math.min(Math.max(Math.round(pos.x), 0), next.x_end - MIN_ROI_WIDTH);
+        if (feature.indexOf("right") !== -1)
+            next.x_end = Math.max(Math.min(Math.round(pos.x), maxX), next.x_start + MIN_ROI_WIDTH);
+        if (feature.indexOf("top") !== -1)
+            next.y_start = Math.min(Math.max(Math.round(pos.y), 0), next.y_end - MIN_ROI_HEIGHT);
+        if (feature.indexOf("bottom") !== -1)
+            next.y_end = Math.max(Math.min(Math.round(pos.y), maxY), next.y_start + MIN_ROI_HEIGHT);
+
+        roi = clampRoi(next);
+        setRoiDirty(true);
+        syncRoiInputs();
+    }
+
+    function roiStatus(message, state) {
+        const status = document.getElementById("roiStatus");
+        status.dataset.state = state || "";
+        status.textContent = message;
+    }
+
+    async function saveRoi() {
+        if (!roi || !roiDirty) return;
+        roiStatus("Saving…");
+        try {
+            const res = await fetch(API + "/roi", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(clampRoi(roi))
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                roiStatus(data.error || "Failed to save the region.", "err");
+                document.getElementById("roiSaveBtn").disabled = false;
+                return;
+            }
+            roi = data.roi;
+            roiSource = data.source;
+            setRoiDirty(false);
+            syncRoiInputs();
+            render();
+            roiStatus("Saved. Other replicas pick it up at their next check.", "ok");
+            toast("Detection region saved.", "ok");
+        } catch (e) {
+            console.error(e);
+            roiStatus("Error saving the region.", "err");
+            document.getElementById("roiSaveBtn").disabled = false;
+        }
+    }
+
+    async function resetRoi() {
+        if (!roiConfig) return;
+        if (!window.confirm("Go back to the detection region defined in stations.json?")) return;
+        roiStatus("Resetting…");
+        try {
+            const res = await fetch(API + "/roi", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reset: true })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                roiStatus(data.error || "Failed to reset the region.", "err");
+                return;
+            }
+            roi = data.roi;
+            roiSource = data.source;
+            setRoiDirty(false);
+            syncRoiInputs();
+            render();
+            roiStatus("Using the stations.json region again.", "ok");
+            toast("Detection region reset to stations.json.", "ok");
+        } catch (e) {
+            console.error(e);
+            roiStatus("Error resetting the region.", "err");
+        }
+    }
+
     /* ---------- data ---------- */
 
     async function fetchData() {
@@ -891,6 +1138,7 @@
     function initCanvas() {
         canvas.width = imageObj.naturalWidth || imageObj.width;
         canvas.height = imageObj.naturalHeight || imageObj.height;
+        fitRoiToFrame();   // an open-ended bottom edge becomes this frame's last row
         render();
         renderSidebar();
     }
@@ -930,34 +1178,80 @@
         return { x, w, top: cy, bottom: cy + h };
     }
 
+    // A grip on each edge: the box is a small target without one, and the grip
+    // is what says the edges move. Vertical edges get a tall grip at their
+    // middle, horizontal ones a wide grip, so the two never collide.
+    function drawRoiGrips(xs, xe, ys, ye) {
+        const grips = [
+            { x: xs, y: (ys + ye) / 2, w: 12, h: 34 },
+            { x: xe, y: (ys + ye) / 2, w: 12, h: 34 },
+            { x: (xs + xe) / 2, y: ys, w: 34, h: 12 },
+            { x: (xs + xe) / 2, y: ye, w: 34, h: 12 }
+        ];
+        grips.forEach(g => {
+            ctx.save();
+            ctx.shadowColor = "rgba(0,0,0,.45)";
+            ctx.shadowBlur = 7;
+            roundRect(g.x - g.w / 2, g.y - g.h / 2, g.w, g.h, 6);
+            ctx.fillStyle = "rgba(20,24,30,.92)";
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = "#8ec3ff";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            // Two short lines suggest which way the grip moves.
+            ctx.fillStyle = "#8ec3ff";
+            if (g.w > g.h) {
+                ctx.fillRect(g.x - 6, g.y - 2.5, 3, 5);
+                ctx.fillRect(g.x + 3, g.y - 2.5, 3, 5);
+            } else {
+                ctx.fillRect(g.x - 2.5, g.y - 6, 5, 3);
+                ctx.fillRect(g.x - 2.5, g.y + 3, 5, 3);
+            }
+            ctx.restore();
+        });
+    }
+
     function drawRoi() {
-        if (!roi) return;
+        // No frame yet means no box: the canvas is still at its default 300x150,
+        // and clamping the region to that would draw nonsense at the wrong scale.
+        if (!roi || !imageObj) return;
         const w = canvas.width, h = canvas.height;
         const xs = Math.max(0, Math.min(roi.x_start, w));
         const xe = Math.max(xs, Math.min(roi.x_end, w));
+        const ys = Math.max(0, Math.min(roi.y_start, h));
+        const ye = Math.max(ys, Math.min(roi.y_end, h));
 
-        ctx.fillStyle = "rgba(0,0,0,.30)";
-        ctx.fillRect(0, 0, xs, h);
-        ctx.fillRect(xe, 0, w - xe, h);
+        // Everything outside the box is out of bounds for the detector.
+        ctx.fillStyle = "rgba(0,0,0,.34)";
+        ctx.fillRect(0, 0, w, ys);
+        ctx.fillRect(0, ye, w, h - ye);
+        ctx.fillRect(0, ys, xs, ye - ys);
+        ctx.fillRect(xe, ys, w - xe, ye - ys);
 
         ctx.save();
         ctx.strokeStyle = "rgba(80,160,255,.95)";
         ctx.lineWidth = 1.5;
         ctx.setLineDash([7, 5]);
-        ctx.strokeRect(xs + .5, .5, Math.max(0, xe - xs - 1), h - 1);
+        ctx.strokeRect(xs + .5, ys + .5,
+            Math.max(0, xe - xs - 1), Math.max(0, ye - ys - 1));
         ctx.restore();
+
+        drawRoiGrips(xs, xe, ys, ye);
 
         ctx.save();
         ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-        const label = "ROI x" + Math.round(roi.x_start) + "–" + Math.round(roi.x_end);
+        const label = "x " + Math.round(xs) + "–" + Math.round(xe) +
+                      " · y " + Math.round(ys) + "–" + Math.round(ye);
         const tw = ctx.measureText(label).width;
-        const bx = Math.max(4, (xs + xe) / 2 - tw / 2 - 7);
-        roundRect(bx, 8, tw + 14, 19, 6);
+        const bx = Math.min(Math.max(4, (xs + xe) / 2 - tw / 2 - 7), w - tw - 18);
+        const by = Math.min(ys + 10, h - 23);
+        roundRect(bx, by, tw + 14, 19, 6);
         ctx.fillStyle = "rgba(0,0,0,.62)";
         ctx.fill();
         ctx.fillStyle = "#8ec3ff";
         ctx.textBaseline = "middle";
-        ctx.fillText(label, bx + 7, 18);
+        ctx.fillText(label, bx + 7, by + 10);
         ctx.textBaseline = "alphabetic";
         ctx.restore();
     }
@@ -1199,17 +1493,66 @@
 
     /* ---------- dragging ---------- */
 
-    function canvasY(e) {
+    function canvasPos(e) {
         const rect = canvas.getBoundingClientRect();
-        return (e.clientY - rect.top) * (canvas.height / rect.height);
+        return {
+            x: (e.clientX - rect.left) * (canvas.width / rect.width),
+            y: (e.clientY - rect.top) * (canvas.height / rect.height)
+        };
     }
 
-    // Hit tolerance in image pixels, kept at ~12 on screen however far the frame
-    // is scaled down -- a 640x480 camera shown at half size is otherwise fiddly.
-    function hitThreshold() {
+    // Image pixels per screen pixel. Tolerances below are quoted on screen and
+    // scaled up by this, so a 640x480 frame shown at half size is as easy to hit
+    // as a 1280x720 one.
+    function displayScale() {
         const rect = canvas.getBoundingClientRect();
-        if (!rect.height) return 12;
-        return Math.max(6, 12 * (canvas.height / rect.height));
+        return rect.height ? canvas.height / rect.height : 1;
+    }
+
+    function hitThreshold() {
+        return Math.max(6, 12 * displayScale());
+    }
+
+    function edgeThreshold() {
+        return Math.max(6, 10 * displayScale());
+    }
+
+    // Which part of the box the pointer is on: one side, or the corner joining
+    // two of them. Only the box itself is grabbable -- the dimmed area around it
+    // has no edge to move.
+    function hitRoiFeature(pos) {
+        if (!roi) return null;
+        const t = edgeThreshold();
+        const inX = pos.x >= roi.x_start - t && pos.x <= roi.x_end + t;
+        const inY = pos.y >= roi.y_start - t && pos.y <= roi.y_end + t;
+        if (!inX && !inY) return null;
+
+        const side = inY
+            ? (Math.abs(pos.x - roi.x_start) <= t ? "left"
+                : Math.abs(pos.x - roi.x_end) <= t ? "right" : null)
+            : null;
+        const row = inX
+            ? (Math.abs(pos.y - roi.y_start) <= t ? "top"
+                : Math.abs(pos.y - roi.y_end) <= t ? "bottom" : null)
+            : null;
+
+        if (side && row) return row + "-" + side;   // "top-left", "bottom-right", ...
+        return side || row;
+    }
+
+    function featureCursor(feature) {
+        if (feature === "left" || feature === "right") return "ew-resize";
+        if (feature === "top" || feature === "bottom") return "ns-resize";
+        return (feature === "top-left" || feature === "bottom-right")
+            ? "nwse-resize" : "nesw-resize";
+    }
+
+    // Corners and the vertical sides are narrow targets, so they get first
+    // refusal over a calibration line. The horizontal sides give way instead:
+    // an edge can be grabbed anywhere along its width, a line only on itself.
+    function grabsRoi(feature, hit) {
+        if (!feature) return false;
+        return !(feature === "top" || feature === "bottom") || hit === -1;
     }
 
     function hitIndex(y) {
@@ -1221,7 +1564,18 @@
     }
 
     canvas.addEventListener('pointerdown', (e) => {
-        const hit = hitIndex(canvasY(e));
+        const pos = canvasPos(e);
+        const hit = hitIndex(pos.y);
+        const feature = hitRoiFeature(pos);
+
+        if (grabsRoi(feature, hit)) {
+            dragRoi = feature;
+            canvas.setPointerCapture(e.pointerId);
+            render();
+            e.preventDefault();
+            return;
+        }
+
         if (hit === -1) return;
         isDragging = true;
         dragIndex = hit;
@@ -1233,23 +1587,39 @@
     });
 
     canvas.addEventListener('pointermove', (e) => {
-        const y = canvasY(e);
+        const pos = canvasPos(e);
+
+        if (dragRoi) {
+            moveRoiFeature(dragRoi, pos);
+            render();
+            return;
+        }
+
         if (isDragging && dragIndex !== -1) {
-            points[dragIndex].pixel = Math.min(Math.max(y, 0), canvas.height);
+            points[dragIndex].pixel = Math.min(Math.max(pos.y, 0), canvas.height);
             setDirty(true);
             render();
             return;
         }
-        const next = hitIndex(y);
+
+        const feature = hitRoiFeature(pos);
+        const hit = hitIndex(pos.y);
+        const onRoi = grabsRoi(feature, hit);
+        const next = onRoi ? -1 : hit;
         if (next !== hoverIndex) {
             hoverIndex = next;
-            canvas.style.cursor = next === -1 ? "crosshair" : "ns-resize";
             syncPointRows();
             render();
         }
+        canvas.style.cursor = onRoi ? featureCursor(feature)
+            : (hit === -1 ? "crosshair" : "ns-resize");
     });
 
     function endDrag() {
+        if (dragRoi) {
+            dragRoi = null;
+            return;
+        }
         if (!isDragging) return;
         isDragging = false;
         dragIndex = -1;
@@ -1459,9 +1829,17 @@
             const current = list.find(s => s.id === STATION) || list[0];
 
             if (current) {
-                roi = current.roi || null;
+                // /api/.../roi owns this once it has answered; this is the fallback
+                // for a station whose region request failed.
+                if (!roi) roi = current.roi || null;
                 const name = (current.name && (current.name.en || current.name.th)) || current.id;
-                const range = roi ? " · gauge at x " + roi.x_start + "–" + roi.x_end : "";
+                // An edge past the frame is how "to the end of the picture" is
+                // stored; say it the same way here.
+                const bottom = imageObj ? Math.min(roi.y_end, canvas.height) : roi.y_end;
+                const range = roi
+                    ? " · region x" + roi.x_start + "–" + roi.x_end +
+                      " y" + roi.y_start + "–" + bottom
+                    : "";
                 document.getElementById("stationLine").textContent = name + range;
                 document.title = "Calibrate · " + name;
             }
@@ -1486,7 +1864,14 @@
 
     /* ---------- boot ---------- */
 
+    document.getElementById("roiStart").addEventListener("change", applyRoiInputs);
+    document.getElementById("roiEnd").addEventListener("change", applyRoiInputs);
+    document.getElementById("roiTop").addEventListener("change", applyRoiInputs);
+    document.getElementById("roiBottom").addEventListener("change", applyRoiInputs);
+    setRoiDirty(false);
+
     loadStations();
+    loadRoi();
     fetchData();
     loadMarkers();
 </script>

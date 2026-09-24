@@ -18,6 +18,7 @@ from flask_caching import Cache
 import storage
 import database
 import stations
+from stations import Station
 
 # Suppress OpenCV warnings and H.264 decoder warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -62,6 +63,20 @@ def save_calibration_to_file(station, points):
         print(f"Error saving calibration for {station.id}: {e}")
         return False
 
+def load_roi(station):
+    """Pick up a detection region saved from the calibrate page -- by this replica
+    or another. Nothing saved means stations.json still decides, which is how a
+    station is given its region in the first place."""
+    saved = database.load_roi(station.id)
+    if not saved:
+        station.roi_source = "config"
+        return False
+
+    # Overlay the saved edges on the ones in force, so a save predating the
+    # vertical edges keeps its columns and defaults the rows to the whole frame.
+    station.set_roi(dict(station.roi, **saved), source="database")
+    return True
+
 # =========================
 # History Tracking
 # =========================
@@ -83,8 +98,9 @@ def background_tracker(station):
     while True:
         try:
             print(f"[{station.id}] running background water level check...")
-            # picks up calibration saved by another replica
+            # picks up calibration and ROI saved by another replica
             load_calibration(station)
+            load_roi(station)
 
             if not station.cal_points:
                 # Without calibration a pixel row converts to a meaningless
@@ -104,10 +120,12 @@ def background_tracker(station):
                     aligned_segment = [align_image(station, f) for f in segment] or None
                     raw_y = detect_water_level_on_gauge(
                         aligned_frame, station.x_start, station.x_end,
+                        y_start=station.y_start, y_end=station.y_end,
                         frames=aligned_segment)
                     if raw_y is None:
                         raw_y = detect_yellow_regions_fused(
-                            aligned_frame, station.x_start, station.x_end)
+                            aligned_frame, station.x_start, station.x_end,
+                            station.y_start, station.y_end)
 
                     y = smooth_detection(station, raw_y)
 
@@ -325,10 +343,27 @@ def get_video_segments(station):
         print(f"Error fetching playlist: {e}")
     return []
 
-def detect_yellow_region_enhanced(image, x_start=225, x_end=390):
+def _roi_rows(image, y_start=0, y_end=None):
+    """The rows the detector may look at, clipped to the frame.
+
+    The bottom edge is commonly the frame's own height (or larger), so this is
+    where "to the bottom of the picture" stops being a sentinel and becomes
+    actual rows. At least one row always survives, so a caller that would
+    otherwise get an empty band still gets an answer rather than an error.
+    """
+    h = image.shape[0]
+    top = 0 if y_start is None else max(0, min(int(y_start), h))
+    bottom = h if y_end is None else max(top, min(int(y_end), h))
+    if bottom - top < 1:
+        bottom = min(h, top + 1)
+    return top, bottom
+
+
+def detect_yellow_region_enhanced(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Highly accurate yellow region detection with multiple enhancement strategies."""
     h = image.shape[0]
     w = image.shape[1]
+    ys, ye = _roi_rows(image, y_start, y_end)
     
     # Multi-scale color detection for robustness
     detected_rows = []
@@ -348,6 +383,8 @@ def detect_yellow_region_enhanced(image, x_start=225, x_end=390):
         mask = cv2.inRange(hsv, np.array(lower_hsv), np.array(upper_hsv))
         mask[:, :x_start] = 0
         mask[:, x_end:] = 0
+        mask[:ys] = 0
+        mask[ye:] = 0
         
         # Enhanced morphological operations
         kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -394,7 +431,7 @@ def detect_yellow_region_enhanced(image, x_start=225, x_end=390):
                 if abs(angle) < 15:  # Nearly horizontal (±15 degrees)
                     # Get yellow pixels near this line
                     line_y = int((y1 + y2) / 2)
-                    if 50 <= line_y <= h - 50:  # Avoid edges
+                    if max(50, ys) <= line_y <= min(h - 50, ye):  # In region, off frame edge
                         # Check for yellow content near this line
                         roi_patch = image[line_y-10:line_y+10, x_start:x_end]
                         hsv_patch = cv2.cvtColor(roi_patch, cv2.COLOR_BGR2HSV)
@@ -417,11 +454,11 @@ def detect_yellow_region_enhanced(image, x_start=225, x_end=390):
         edge_response = cv2.filter2D(gray, -1, kernel_edge)
         
         # Find peaks in edge response within ROI
-        roi_edges = edge_response[:, x_start:x_end]
+        roi_edges = edge_response[ys:ye, x_start:x_end]
         
         # Find horizontal lines with high edge response
-        for y in range(100, h-100, 5):  # Sample every 5 pixels
-            line_response = np.mean(roi_edges[y-5:y+5, :])
+        for y in range(max(100, ys), min(h - 100, ye), 5):  # Sample every 5 pixels
+            line_response = np.mean(roi_edges[max(0, y - 5 - ys):y + 5 - ys, :])
             if line_response > np.percentile(edge_response, 80):
                 # Verify with color
                 color_sample = image[y-5:y+5, x_start:x_end]
@@ -492,10 +529,11 @@ def adaptive_color_range(image):
     else:  # Normal lighting
         return ([18, 100, 100], [35, 255, 255])
 
-def detect_yellow_region_adaptive(image, x_start=225, x_end=390):
+def detect_yellow_region_adaptive(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Ultra-precisive yellow detection with adaptive parameters."""
     h = image.shape[0]
     w = image.shape[1]
+    ys, ye = _roi_rows(image, y_start, y_end)
     
     detected_rows = []
     
@@ -523,6 +561,8 @@ def detect_yellow_region_adaptive(image, x_start=225, x_end=390):
             mask = cv2.inRange(base_hsv, adaptive_lower, adaptive_upper)
             mask[:, :x_start] = 0
             mask[:, x_end:] = 0
+            mask[:ys] = 0
+            mask[ye:] = 0
             
             # Smart morphological operations
             if np.sum(mask > 0) > 100:  # Only process if enough yellow pixels
@@ -559,11 +599,11 @@ def detect_yellow_region_adaptive(image, x_start=225, x_end=390):
         edges = cv2.Canny(cv2.GaussianBlur(gray, (0, 0), sigma), 30, 100)
         
         # Find horizontal edge density
-        roi_edges = edges[:, x_start:x_end]
+        roi_edges = edges[ys:ye, x_start:x_end]
         
-        for y in range(20, h-20, 3):  # Fine sampling
+        for y in range(max(20, ys), min(h - 20, ye), 3):  # Fine sampling
             window_size = 11
-            edge_window = roi_edges[y-window_size//2:y+window_size//2, :]
+            edge_window = roi_edges[max(0, y - window_size // 2 - ys):y + window_size // 2 - ys, :]
             edge_density = np.sum(edge_window > 0) / edge_window.size
             
             if edge_density > 0.1:  # Significant edge density
@@ -613,15 +653,17 @@ def detect_yellow_region_adaptive(image, x_start=225, x_end=390):
     
     return None
 
-def detect_yellow_regions_fused(image, x_start=225, x_end=390):
+def detect_yellow_regions_fused(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Ultimate yellow detection cascade with all enhancement strategies."""
+    ys, ye = _roi_rows(image, y_start, y_end)
+
     # 1. Try most advanced adaptive method
-    result = detect_yellow_region_adaptive(image, x_start, x_end)
+    result = detect_yellow_region_adaptive(image, x_start, x_end, ys, ye)
     if result is not None:
         return result
     
     # 2. Try enhanced multi-scale method
-    result = detect_yellow_region_enhanced(image, x_start, x_end)
+    result = detect_yellow_region_enhanced(image, x_start, x_end, ys, ye)
     if result is not None:
         return result
     
@@ -643,7 +685,7 @@ def detect_yellow_regions_fused(image, x_start=225, x_end=390):
             mid_x = int((x1 + x2) / 2)
             mid_y = int((y1 + y2) / 2)
             
-            if x_start <= mid_x <= x_end and 50 <= mid_y <= image.shape[0] - 50:
+            if x_start <= mid_x <= x_end and max(50, ys) <= mid_y <= min(image.shape[0] - 50, ye):
                 # Check if there's yellow content near this line
                 line_y = max(y1, y2)
                 roi_patch = image[max(0, line_y-15):min(image.shape[0], line_y+15), 
@@ -669,12 +711,15 @@ def _smooth(values, window=5):
     return np.convolve(values, np.ones(window) / window, mode="same")
 
 
-def _yellow_column(image, x_start, x_end):
+def _yellow_column(image, x_start, x_end, y_start=0, y_end=None):
     """Locate the staff by its yellow paint, and say which of its rows are lit."""
+    ys, ye = _roi_rows(image, y_start, y_end)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))
     mask[:, :x_start] = 0
     mask[:, x_end:] = 0
+    mask[:ys] = 0
+    mask[ye:] = 0
 
     ys, xs = np.nonzero(mask)
     if len(xs) < 50:
@@ -686,7 +731,7 @@ def _yellow_column(image, x_start, x_end):
     return left, right, int(ys.min()), int(np.percentile(ys, 90))
 
 
-def _banding_column(image, x_start, x_end):
+def _banding_column(image, x_start, x_end, y_start=0, y_end=None):
     """
     Locate the staff without relying on colour.
 
@@ -695,8 +740,13 @@ def _banding_column(image, x_start, x_end):
     column with the most horizontal edges, and it is the longest unbroken run of
     them: masonry above the staff is textured too, but only in patches.
     """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, x_start:x_end + 1]
-    edges = _smooth(np.percentile(np.abs(np.diff(gray, axis=0)), 90, axis=0), 3)
+    ys, ye = _roi_rows(image, y_start, y_end)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)
+    band = gray[ys:ye, x_start:x_end + 1]
+    if band.shape[0] < 2:
+        return None
+
+    edges = _smooth(np.percentile(np.abs(np.diff(band, axis=0)), 90, axis=0), 3)
     if edges.max() <= 0:
         return None
 
@@ -715,9 +765,11 @@ def _banding_column(image, x_start, x_end):
     a, b = max(runs, key=lambda r: r[1] - r[0])
     left, right = x_start + a, x_start + b
 
-    strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
+    # Rows of that column, still inside the region, so the lit-run search below
+    # cannot walk back out of it.
+    strip = gray[ys:ye, left - x_start:right - x_start + 1]
     contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
-    lit = np.nonzero(contrast >= contrast.max() * 0.45)[0]
+    lit = np.nonzero(contrast >= contrast.max() * 0.45)[0] + ys
     if len(lit) < 20:
         return None
 
@@ -735,8 +787,9 @@ def _banding_column(image, x_start, x_end):
     return left, right, int(top), int(top + (bottom - top) * 0.6)
 
 
-def detect_water_level_on_gauge(image, x_start=225, x_end=390, frames=None,
-                                texture_drop=0.5, sustain_rows=9, motion_ratio=3.0):
+def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=None,
+                                frames=None, texture_drop=0.5, sustain_rows=9,
+                                motion_ratio=3.0):
     """
     Find the waterline by where the gauge staff stops looking like a gauge staff.
 
@@ -760,7 +813,9 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, frames=None,
     9; the correction only applies where that gap is real, and is inert on the
     muddy rivers that never reflect.
     """
-    column = _yellow_column(image, x_start, x_end) or _banding_column(image, x_start, x_end)
+    ys, ye = _roi_rows(image, y_start, y_end)
+    column = (_yellow_column(image, x_start, x_end, ys, ye)
+              or _banding_column(image, x_start, x_end, ys, ye))
     if column is None:
         return None
     left, right, top, ref_end = column
@@ -776,7 +831,7 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, frames=None,
     waterline = None
     below = 0
     collapsed = False
-    for y in range(top, len(contrast)):
+    for y in range(top, min(len(contrast), ye)):
         if contrast[y] >= threshold:
             waterline = y
             below = 0
@@ -826,16 +881,18 @@ def _correct_for_reflection(frames, left, right, top, waterline, motion_ratio):
     return waterline
 
 
-def detect_yellow_region_fused(image, x_start=225, x_end=390):
+def detect_yellow_region_fused(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Enhanced yellow detection with specialized water level detection."""
+    ys, ye = _roi_rows(image, y_start, y_end)
+
     # First try specialized water level detection on gauge
-    result = detect_water_level_on_gauge(image, x_start, x_end)
+    result = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye)
     if result is not None:
         print(f"Water level detected on gauge: {result}")
         return result
     
     # Fallback to cascade method
-    result = detect_yellow_regions_fused(image, x_start, x_end)
+    result = detect_yellow_regions_fused(image, x_start, x_end, ys, ye)
     if result is not None:
         return result
     
@@ -853,6 +910,8 @@ def detect_yellow_region_fused(image, x_start=225, x_end=390):
     color_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
     color_mask[:, :x_start] = 0
     color_mask[:, x_end:] = 0
+    color_mask[:ys] = 0
+    color_mask[ye:] = 0
     
     # Morphological operations to clean up the mask
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -880,6 +939,8 @@ def detect_yellow_region_fused(image, x_start=225, x_end=390):
     # Restrict edge detection to ROI
     edge_mask[:, :x_start] = 0
     edge_mask[:, x_end:] = 0
+    edge_mask[:ys] = 0
+    edge_mask[ye:] = 0
     
     # 3. FUSION: Combine color and edge detection
     # Weighted combination
@@ -915,10 +976,11 @@ def detect_yellow_region_fused(image, x_start=225, x_end=390):
     
     return None
 
-def visualize_detection_debug(image, x_start=225, x_end=390):
+def visualize_detection_debug(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Create debug visualization showing color mask, edge mask, and fused result."""
     h = image.shape[0]
     w = image.shape[1]
+    ys, ye = _roi_rows(image, y_start, y_end)
     
     # Color detection
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -927,6 +989,8 @@ def visualize_detection_debug(image, x_start=225, x_end=390):
     color_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
     color_mask[:, :x_start] = 0
     color_mask[:, x_end:] = 0
+    color_mask[:ys] = 0
+    color_mask[ye:] = 0
     
     # Edge detection
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -939,6 +1003,8 @@ def visualize_detection_debug(image, x_start=225, x_end=390):
     edge_mask = (edge_strength > edge_threshold).astype(np.uint8) * 255
     edge_mask[:, :x_start] = 0
     edge_mask[:, x_end:] = 0
+    edge_mask[:ys] = 0
+    edge_mask[ye:] = 0
     
     # Fusion
     fused_mask = cv2.addWeighted(color_mask, 0.7, edge_mask, 0.3, 0)
@@ -950,7 +1016,7 @@ def visualize_detection_debug(image, x_start=225, x_end=390):
     
     # Panel 1: Original with ROI
     roi_image = image.copy()
-    cv2.rectangle(roi_image, (x_start, 0), (x_end, h), (0, 255, 0), 2)
+    cv2.rectangle(roi_image, (x_start, ys), (x_end, ye), (0, 255, 0), 2)
     debug_image[0:h, 0:w] = roi_image
     
     # Panel 2: Color mask
@@ -964,16 +1030,18 @@ def visualize_detection_debug(image, x_start=225, x_end=390):
     
     return debug_image
 
-def visualize_water_level_debug(image, x_start=225, x_end=390):
+def visualize_water_level_debug(image, x_start=225, x_end=390, y_start=0, y_end=None):
     """Create detailed visualization of water level detection process."""
+    ys, ye = _roi_rows(image, y_start, y_end)
+
     # Run water level detection
-    detected_y = detect_water_level_on_gauge(image, x_start, x_end)
+    detected_y = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye)
     
     # Create visualization image
     debug_img = image.copy()
     
     # Draw ROI boundary
-    cv2.rectangle(debug_img, (x_start, 0), (x_end, image.shape[0]), (0, 255, 0), 2)
+    cv2.rectangle(debug_img, (x_start, ys), (x_end, ye), (0, 255, 0), 2)
     
     if detected_y is not None:
         # Draw detected water level
@@ -1250,7 +1318,9 @@ def get_status(station_id=None):
         aligned_frame = align_image(station, original_frame)
 
         # Perform enhanced detection with smoothing
-        raw_detection = detect_yellow_region_fused(aligned_frame, station.x_start, station.x_end)
+        raw_detection = detect_yellow_region_fused(
+            aligned_frame, station.x_start, station.x_end,
+            station.y_start, station.y_end)
         y_lowest_yellow = smooth_detection(station, raw_detection)
 
     if y_lowest_yellow is None:
@@ -1313,10 +1383,14 @@ def debug_detection(station_id=None):
         aligned_frame = align_image(station, original_frame)
         
         # Create debug visualization
-        debug_image = visualize_detection_debug(aligned_frame)
+        debug_image = visualize_detection_debug(
+            aligned_frame, station.x_start, station.x_end,
+            station.y_start, station.y_end)
         
         # Run detection
-        detected_y = detect_yellow_region_fused(aligned_frame, station.x_start, station.x_end)
+        detected_y = detect_yellow_region_fused(
+            aligned_frame, station.x_start, station.x_end,
+            station.y_start, station.y_end)
         
         # Draw detection result on debug image
         if detected_y is not None:
@@ -1351,10 +1425,14 @@ def debug_water_level(station_id=None):
         aligned_frame = align_image(station, original_frame)
         
         # Run water level detection
-        detected_y = detect_water_level_on_gauge(aligned_frame, station.x_start, station.x_end)
+        detected_y = detect_water_level_on_gauge(
+            aligned_frame, station.x_start, station.x_end,
+            y_start=station.y_start, y_end=station.y_end)
         
         # Create water level debug visualization
-        debug_image = visualize_water_level_debug(aligned_frame)
+        debug_image = visualize_water_level_debug(
+            aligned_frame, station.x_start, station.x_end,
+            station.y_start, station.y_end)
         
         # Save debug image
         water_level_debug_url = store_frame(station, debug_image, "water_level_debug")
@@ -1446,6 +1524,57 @@ def handle_markers(station_id=None):
     database.save_markers(station.id, cleaned)
     return jsonify({"success": True, "markers": cleaned})
 
+@app.route('/api/roi', methods=['GET', 'POST'])
+@app.route('/api/<station_id>/roi', methods=['GET', 'POST'])
+def handle_roi(station_id=None):
+    """The rectangle the detector looks at: read it, move it, or hand it back to
+    stations.json. Saved to MongoDB so no commit is needed to aim a camera."""
+    station = resolve_station(station_id)
+
+    if request.method == 'GET':
+        return jsonify({
+            "roi": station.roi,
+            "config": station.config_roi,
+            "source": station.roi_source,
+        })
+
+    data = request.json or {}
+
+    if data.get("reset"):
+        # Validate before touching anything: the rectangle is the committed one,
+        # but a stations.json edited to nonsense should not clear a working one.
+        try:
+            candidate = Station.validate_roi(station.config_roi)
+        except ValueError as e:
+            return jsonify({"error": f"stations.json region is unusable: {e}"}), 409
+
+        try:
+            database.clear_roi(station.id)
+        except Exception as e:
+            print(f"Error clearing ROI for {station.id}: {e}")
+            return jsonify({"error": "Failed to clear the saved region"}), 500
+
+        with station.lock:
+            station.set_roi(candidate, source="config")
+        return jsonify({"roi": station.roi, "source": "config"})
+
+    # Validate first, then persist, then apply: a failed write must not leave this
+    # replica seeing a region the others will overwrite at their next check.
+    try:
+        candidate = Station.validate_roi(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        database.save_roi(station.id, candidate)
+    except Exception as e:
+        print(f"Error saving ROI for {station.id}: {e}")
+        return jsonify({"error": "Failed to save the region"}), 500
+
+    with station.lock:
+        station.set_roi(candidate, source="database")
+    return jsonify({"roi": station.roi, "source": "database"})
+
 @app.route('/api/calibration/frame', methods=['GET'])
 @app.route('/api/<station_id>/calibration/frame', methods=['GET'])
 def get_calibration_frame(station_id=None):
@@ -1531,6 +1660,15 @@ def get_history(station_id=None):
     series["to"] = end_ts
     series["max_range_days"] = MAX_RANGE_DAYS
     return jsonify(series)
+
+# ROI edits live in MongoDB so aiming a camera does not need a commit; a station
+# with nothing saved keeps the region from stations.json. Loaded before the
+# threads so the first reading of a fresh replica already sees the current one.
+for _station in stations.all_stations():
+    try:
+        load_roi(_station)
+    except Exception as e:
+        print(f"[{_station.id}] saved detection region could not be applied: {e}")
 
 # Started here, not next to background_tracker: the threads run immediately and
 # would race the rest of this module, calling helpers that are not defined yet.

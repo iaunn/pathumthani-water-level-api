@@ -12,11 +12,12 @@ MARKER_COLORS = ("yellow", "orange", "red", "grey")
 _readings = None
 _calibration = None
 _markers = None
+_station_config = None
 
 
 def init():
     """Connect and ensure indexes. Raises if unreachable, so a bad deploy fails at boot."""
-    global _readings, _calibration, _markers
+    global _readings, _calibration, _markers, _station_config
 
     uri = os.getenv("MONGODB_URI")
     if not uri:
@@ -32,6 +33,8 @@ def init():
     _readings = db["readings"]
     _calibration = db["calibration"]
     _markers = db["markers"]
+    # Per-station settings that used to live only in the committed config file.
+    _station_config = db["station_config"]
 
     # Every query is scoped to one station, so the station leads the index.
     _readings.create_index([("station", ASCENDING), ("timestamp", DESCENDING)])
@@ -137,6 +140,40 @@ def load_calibration_points(station_id):
     if not doc:
         return []
     return [tuple(p) for p in doc.get("points", [])]
+
+
+def load_roi(station_id):
+    """The detection region saved from the calibrate page, or None when nothing
+    has been saved and stations.json still speaks for this station. Only the
+    edges actually stored are returned: a save made before the vertical edges
+    existed carries the columns alone, and the caller fills in the rest."""
+    doc = _station_config.find_one({"_id": station_id}, {"_id": 0, "roi": 1})
+    if not doc or not isinstance(doc.get("roi"), dict):
+        return None
+    roi = doc["roi"]
+    try:
+        edges = {k: int(roi[k])
+                 for k in ("x_start", "x_end", "y_start", "y_end") if k in roi}
+    except (TypeError, ValueError):
+        return None
+    return edges or None
+
+
+def save_roi(station_id, roi):
+    _station_config.update_one(
+        {"_id": station_id},
+        {"$set": {
+            "roi": {k: int(roi[k])
+                    for k in ("x_start", "x_end", "y_start", "y_end")},
+            "updated_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+
+
+def clear_roi(station_id):
+    """Hand the station back to the region committed in stations.json."""
+    _station_config.update_one({"_id": station_id}, {"$unset": {"roi": ""}})
 
 
 def load_markers(station_id):
