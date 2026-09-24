@@ -739,6 +739,34 @@ def _yellow_column(image, x_start, x_end, y_start=0, y_end=None):
     return left, right, int(ys.min()), int(np.percentile(ys, 90))
 
 
+def _loose_yellow_staff(image, x_start, x_end, y_start=0, y_end=None):
+    """
+    Is there a yellow staff in the box, even one too pale to measure?
+
+    Heavy rain drops the paint's saturation below the reading mask -- p50 79 on
+    one frame, against 226 when dry -- so the strict pass finds nothing and the
+    colour-blind fallback would take over and measure the platform behind the
+    staff instead. This pass only has to separate painted rows from incidental
+    yellow, which shape does: the fraction of rows carrying at least eight
+    yellow pixels measured 0.96 for a washed-out staff and 0.42-0.57 for wet
+    ones, against 0.00 for the box around a white/red staff and none at all
+    for a night frame.
+    """
+    ys, ye = _roi_rows(image, y_start, y_end)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([20, 40, 120]), np.array([30, 255, 255]))
+    mask[:, :x_start] = 0
+    mask[:, x_end:] = 0
+    mask[:ys] = 0
+    mask[ye:] = 0
+
+    rows, yy = (mask > 0).sum(axis=1), np.nonzero(mask)[0]
+    if len(yy) == 0:
+        return False
+    y0, y1 = int(yy.min()), int(yy.max())
+    return float((rows[y0:y1 + 1] >= 8).mean()) >= 0.25
+
+
 def _banding_column(image, x_start, x_end, y_start=0, y_end=None):
     """
     Locate the staff without relying on colour.
@@ -866,6 +894,15 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     """
     ys, ye = _roi_rows(image, y_start, y_end)
     yellow = _yellow_column(image, x_start, x_end, ys, ye)
+    if yellow is None and _loose_yellow_staff(image, x_start, x_end, ys, ye):
+        # The staff is in the box but washed out of the reading mask -- heavy
+        # rain took its saturation to p50 79 on a frame where it stayed bright.
+        # Texture alone would then measure whatever else shares the box: it
+        # reported 862 px with the surface at 646. Decline instead, and say it
+        # was the colour check that declined.
+        if meta is not None:
+            meta["mode"] = "gauge"
+        return None
     column = yellow or _banding_column(image, x_start, x_end, ys, ye)
     if column is None:
         if meta is not None:
