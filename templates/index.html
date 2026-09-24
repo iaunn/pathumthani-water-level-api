@@ -330,6 +330,41 @@
     .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
     .frame img:not([src]) { visibility: hidden; }
 
+    .plot canvas { cursor: pointer; }
+
+    .frame-missing {
+        position: absolute;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        padding: 16px;
+        text-align: center;
+        font-size: 13px;
+        color: var(--ink-muted);
+        background: var(--wash);
+    }
+    .frame-missing.is-shown { display: flex; }
+
+    .cam-back {
+        appearance: none;
+        border: 1px solid var(--hairline);
+        background: var(--surface);
+        color: var(--ink-2);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 3px 10px;
+        margin-right: 8px;
+        border-radius: 999px;
+        cursor: pointer;
+        display: none;
+    }
+    .cam-back.is-shown { display: inline-block; }
+    .cam-back:hover { background: var(--wash); color: var(--ink); }
+
     .waterline {
         position: absolute;
         left: 0;
@@ -645,11 +680,18 @@
         <div class="now-cam">
             <div class="card-eyebrow">
                 <span id="camLabel" data-i18n="gaugeCamera">Gauge camera</span>
-                <span id="camCaption"></span>
+                <span>
+                    <button type="button" class="cam-back" id="camBack" data-i18n="backToLatest">Back to latest</button>
+                    <span id="camCaption"></span>
+                </span>
             </div>
             <div class="frame">
                 <div class="skeleton" id="skeleton"></div>
                 <img id="frameImg" data-i18n-alt="camAlt" alt="Camera view of the river gauge">
+                <div class="frame-missing" id="frameMissing">
+                    <strong data-i18n="noImageTitle">No image kept</strong>
+                    <span data-i18n="noImageBody">Frames are rotated out long before the readings are.</span>
+                </div>
                 <div class="waterline" id="waterline">
                     <div class="waterline-rule"></div>
                     <div class="waterline-tag" id="waterlineTag"></div>
@@ -759,6 +801,7 @@
         markers: [],
         showMarkers: true,
         selected: null,
+        picked: null,     // a capture pulled up by clicking the chart
         chart: null,
         loaded: false
     };
@@ -831,6 +874,10 @@
             deltaMoved: " {d} m in the last 5 minutes",
             deltaSteady: " over the last 5 minutes",
             showMarkers: "Flood markers",
+            backToLatest: "Back to latest",
+            noImageTitle: "No image kept",
+            noImageBody: "Frames are rotated out long before the readings are.",
+            noCaptureNear: "No capture was taken near that point.",
             monthsShort: "mo",
             customRange: "Custom",
             rangeFrom: "From",
@@ -895,6 +942,10 @@
             deltaMoved: " {d} \u0e21. \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             deltaSteady: " \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             showMarkers: "\u0e40\u0e2a\u0e49\u0e19\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33",
+            backToLatest: "\u0e01\u0e25\u0e31\u0e1a\u0e44\u0e1b\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
+            noImageTitle: "\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e40\u0e01\u0e47\u0e1a\u0e20\u0e32\u0e1e\u0e44\u0e27\u0e49",
+            noImageBody: "\u0e20\u0e32\u0e1e\u0e16\u0e39\u0e01\u0e25\u0e1a\u0e2d\u0e2d\u0e01\u0e01\u0e48\u0e2d\u0e19\u0e04\u0e48\u0e32\u0e17\u0e35\u0e48\u0e27\u0e31\u0e14\u0e44\u0e14\u0e49\u0e21\u0e32\u0e01",
+            noCaptureNear: "\u0e44\u0e21\u0e48\u0e21\u0e35\u0e20\u0e32\u0e1e\u0e17\u0e35\u0e48\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e43\u0e01\u0e25\u0e49\u0e08\u0e38\u0e14\u0e19\u0e31\u0e49\u0e19",
             monthsShort: "\u0e14.",
             customRange: "\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e40\u0e2d\u0e07",
             rangeFrom: "\u0e15\u0e31\u0e49\u0e07\u0e41\u0e15\u0e48",
@@ -1203,6 +1254,7 @@
     }
 
     function shownShot() {
+        if (state.picked) return state.picked;
         if (state.selected === null) return state.recent[state.recent.length - 1] || null;
         for (var i = 0; i < state.recent.length; i++) {
             if (state.recent[i].timestamp === state.selected) return state.recent[i];
@@ -1219,17 +1271,42 @@
         if (img.getAttribute("src") !== src) {
             img.onload = function () {
                 $("skeleton").style.display = "none";
+                $("frameMissing").classList.remove("is-shown");
+                img.style.visibility = "";
                 placeWaterline(shot);
             };
-            img.onerror = function () { $("skeleton").style.display = "none"; };
+            // Captures are rotated out long before the readings are, so an older
+            // point on the chart often has no frame left. Say so, rather than
+            // leaving a broken image behind.
+            img.onerror = function () {
+                $("skeleton").style.display = "none";
+                $("waterline").classList.remove("is-shown");
+                $("frameMissing").classList.add("is-shown");
+                img.style.visibility = "hidden";
+            };
             img.src = src;
         } else {
             placeWaterline(shot);
         }
 
-        var isLatest = shot === state.recent[state.recent.length - 1];
+        var isLatest = !state.picked && shot === state.recent[state.recent.length - 1];
+        // A picked capture can be days back, where a bare clock time would lie.
+        var stamp = sameDay(shot.timestamp) ? clockTime(shot.timestamp) : fullTime(shot.timestamp);
         $("camCaption").textContent = (isLatest ? t("latest") + " \u00b7 " : "") +
-            clockTime(shot.timestamp) + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
+            stamp + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
+        $("camBack").classList.toggle("is-shown", !!state.picked || state.selected !== null);
+    }
+
+    function sameDay(ts) {
+        return new Date(ts * 1000).toDateString() === new Date().toDateString();
+    }
+
+    function showLatest() {
+        state.picked = null;
+        state.selected = null;
+        renderCamera();
+        renderStrip();
+        if (state.chart) state.chart.update("none");
     }
 
     function placeWaterline(shot) {
@@ -1270,6 +1347,7 @@
             btn.appendChild(label);
             btn.addEventListener("click", function () {
                 var isLatest = shot === state.recent[state.recent.length - 1];
+                state.picked = null;
                 state.selected = isLatest ? null : shot.timestamp;
                 renderCamera();
                 renderStrip();
@@ -1391,6 +1469,44 @@
             });
         }
     };
+
+    var pickedMarker = {
+        id: "pickedMarker",
+        afterDatasetsDraw: function (chart) {
+            if (!state.picked) return;
+            var i = nearestIndex(state.picked.timestamp);
+            if (i === -1) return;                 // picked point is outside this range
+            var pt = chart.getDatasetMeta(0).data[i];
+            if (!pt) return;
+
+            var ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(pt.x, chart.chartArea.top);
+            ctx.lineTo(pt.x, chart.chartArea.bottom);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = token("--series");
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+            ctx.fillStyle = token("--surface");
+            ctx.fill();
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = token("--series");
+            ctx.stroke();
+            ctx.restore();
+        }
+    };
+
+    function nearestIndex(ts) {
+        var best = -1, bestGap = Infinity;
+        state.series.forEach(function (p, i) {
+            var gap = Math.abs(p.timestamp - ts);
+            if (gap < bestGap) { bestGap = gap; best = i; }
+        });
+        return best;
+    }
 
     var endpoint = {
         id: "endpoint",
@@ -1531,6 +1647,14 @@
                 responsive: true,
                 maintainAspectRatio: false,
                 onResize: function (c) { c.options.scales.x.ticks.maxTicksLimit = xTickLimit(); },
+                onClick: function (evt, items, chart) {
+                    var hit = items && items.length
+                        ? items[0]
+                        : chart.getElementsAtEventForMode(evt, "index", { intersect: false }, true)[0];
+                    if (!hit) return;
+                    var point = state.series[hit.index];
+                    if (point) pickMoment(point.timestamp);
+                },
                 animation: reduce ? false : { duration: 420 },
                 transitions: { resize: { animation: { duration: 0 } } },
                 layout: { padding: { top: 22, right: 10 } },
@@ -1573,12 +1697,33 @@
                     }
                 }
             },
-            plugins: [markerLines, crosshair, endpoint]
+            plugins: [markerLines, crosshair, endpoint, pickedMarker]
         });
 
         state.chart.__markers = markerSignature();
         applyChartTheme(state.chart);
         state.chart.update("none");
+    }
+
+    function pickMoment(timestamp) {
+        // A point on a long range is an average over a bucket, so ask the server
+        // for the nearest real capture rather than assuming one sits on the point.
+        var window = Math.max(600, Math.round(state.bucket / 2) + 300);
+
+        fetchJson("/api/reading?at=" + timestamp + "&window=" + window)
+            .then(function (reading) {
+                state.picked = reading;
+                state.selected = null;
+                renderCamera();
+                renderStrip();
+                state.chart.update("none");
+            })
+            .catch(function () {
+                // Nothing was captured near that moment; leave the view alone
+                // rather than blanking it.
+                note(t("noCaptureNear"), true);
+                $("customRange").classList.add("is-shown");
+            });
     }
 
     function markerSignature() {
@@ -1631,6 +1776,8 @@
         el.textContent = text;
         el.classList.toggle("is-error", !!isError);
     }
+
+    $("camBack").addEventListener("click", showLatest);
 
     $("markerToggle").checked = state.showMarkers;
     $("markerToggle").addEventListener("change", function () {
