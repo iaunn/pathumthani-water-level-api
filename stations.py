@@ -75,6 +75,10 @@ class Station:
         self.orb = cv2.ORB_create(nfeatures=2000)
         self.detection_history = []
         self.previous_level = 0.0
+        # Which detector produced the last answer: "gauge" (colour + texture),
+        # "blind" (texture only, no gauge colour in the region), "fused", or
+        # "none". Surfaced so a blind reading is never mistaken for a normal one.
+        self.detection_mode = None
         self.lock = threading.Lock()
 
     @property
@@ -156,6 +160,7 @@ class Station:
             "name": self.name,
             "source": self.source,
             "roi": self.roi,
+            "detection_mode": self.detection_mode,
         }
 
 

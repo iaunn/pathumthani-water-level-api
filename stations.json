@@ -40,8 +40,10 @@
       "auth": "digest",
       "credentials_env": "STATION_PATHUMBRIDGE_CREDENTIALS",
       "roi": {
-        "x_start": 600,
-        "x_end": 740
+        "x_start": 933,
+        "x_end": 1084,
+        "y_start": 169,
+        "y_end": 1080
       }
     },
     {
@@ -53,8 +55,10 @@
       "source": "https://ipcamlive.com/68c13eaeec104",
       "snapshot_url": "https://ipcamlive.com/player/snapshot.php?alias=68c13eaeec104",
       "roi": {
-        "x_start": 600,
-        "x_end": 740
+        "x_start": 807,
+        "x_end": 913,
+        "y_start": 306,
+        "y_end": 1080
       }
     }
   ]
