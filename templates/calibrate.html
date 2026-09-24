@@ -3,83 +3,767 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Water Level Calibration</title>
+    <title>Calibrate · River Water Level</title>
+    <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z' fill='%232a78d6'/%3E%3C/svg%3E">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
-        h1 { margin-top: 0; }
-        .container { display: flex; gap: 20px; max-width: 1400px; margin: 0 auto; }
-        .canvas-container { position: relative; border: 1px solid #ccc; background: #fff; overflow: hidden; }
-        canvas { cursor: crosshair; display: block; }
-        .sidebar { width: 350px; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: fit-content; }
-        .point-list { margin-top: 20px; max-height: 500px; overflow-y: auto; }
-        .point-item { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; padding: 10px; background: #f9f9f9; border-radius: 4px; border: 1px solid #eee; }
-        .point-item input { width: 80px; padding: 5px; }
-        .btn { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; background: #007bff; color: white; font-weight: bold; }
-        .btn:hover { background: #0056b3; }
-        .btn-danger { background: #dc3545; }
-        .btn-danger:hover { background: #c82333; }
-        .btn-success { background: #28a745; width: 100%; padding: 12px; font-size: 16px; margin-top: 20px; }
-        .btn-success:hover { background: #218838; }
-        .controls { display: flex; gap: 10px; margin-bottom: 20px; }
-        .loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); display: flex; justify-content: center; align-items: center; font-size: 20px; font-weight: bold; }
-        .instructions { font-size: 14px; color: #666; margin-bottom: 15px; }
-        .divider { margin: 28px 0 18px; border-top: 1px solid #ddd; }
-        h2 { font-size: 17px; margin: 0 0 6px; }
-        .marker-item { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; padding: 8px; background: #f9f9f9; border: 1px solid #eee; border-radius: 4px; }
-        .marker-item input[type=text] { flex: 1; min-width: 0; padding: 5px; }
-        .marker-item input[type=number] { width: 68px; padding: 5px; }
-        .marker-item select { padding: 5px; }
-        .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
-        #markerStatus { font-size: 13px; margin-top: 10px; min-height: 18px; }
+        :root {
+            color-scheme: light;
+            --plane: #f9f9f7;
+            --surface: #fcfcfb;
+            --ink: #0b0b0b;
+            --ink-2: #52514e;
+            --ink-muted: #898781;
+            --hairline: rgba(11, 11, 11, .10);
+            --hairline-strong: rgba(11, 11, 11, .16);
+            --series: #2a78d6;
+            --wash: rgba(11, 11, 11, .04);
+            --point: #15803d;
+            --point-soft: rgba(21, 128, 61, .12);
+            --detected: #be123c;
+            --detected-soft: rgba(190, 18, 60, .10);
+            --rise: #b45309;
+            --fall: #006300;
+            --r-lg: 16px;
+            --r-md: 10px;
+            --r-sm: 7px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                color-scheme: dark;
+                --plane: #0d0d0d;
+                --surface: #1a1a19;
+                --ink: #ffffff;
+                --ink-2: #c3c2b7;
+                --ink-muted: #898781;
+                --hairline: rgba(255, 255, 255, .10);
+                --hairline-strong: rgba(255, 255, 255, .18);
+                --series: #3987e5;
+                --wash: rgba(255, 255, 255, .05);
+                --point: #4ade80;
+                --point-soft: rgba(74, 222, 128, .14);
+                --detected: #fb7185;
+                --detected-soft: rgba(251, 113, 133, .12);
+                --rise: #ec835a;
+                --fall: #0ca30c;
+            }
+        }
+
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --plane: #0d0d0d;
+            --surface: #1a1a19;
+            --ink: #ffffff;
+            --ink-2: #c3c2b7;
+            --ink-muted: #898781;
+            --hairline: rgba(255, 255, 255, .10);
+            --hairline-strong: rgba(255, 255, 255, .18);
+            --series: #3987e5;
+            --wash: rgba(255, 255, 255, .05);
+            --point: #4ade80;
+            --point-soft: rgba(74, 222, 128, .14);
+            --detected: #fb7185;
+            --detected-soft: rgba(251, 113, 133, .12);
+            --rise: #ec835a;
+            --fall: #0ca30c;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--plane);
+            color: var(--ink);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            font-size: 15px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        :focus-visible {
+            outline: 2px solid var(--series);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
+        /* ---------- top bar ---------- */
+
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 24px;
+            background: color-mix(in srgb, var(--plane) 88%, transparent);
+            backdrop-filter: saturate(180%) blur(12px);
+            border-bottom: 1px solid var(--hairline);
+        }
+
+        .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+        .brand svg { width: 20px; height: 20px; flex: none; color: var(--series); }
+        .brand-name {
+            font-size: 14.5px;
+            font-weight: 600;
+            letter-spacing: -.01em;
+            white-space: nowrap;
+        }
+        .brand-sub {
+            font-size: 12.5px;
+            color: var(--ink-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        @media (max-width: 720px) { .brand-sub { display: none; } }
+
+        .station-switch {
+            display: inline-flex;
+            padding: 3px;
+            gap: 2px;
+            background: var(--wash);
+            border-radius: 999px;
+            max-width: 100%;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .station-switch::-webkit-scrollbar { display: none; }
+        .station-switch a {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--ink-2);
+            text-decoration: none;
+            padding: 5px 14px;
+            border-radius: 999px;
+            white-space: nowrap;
+            transition: background .15s ease, color .15s ease;
+        }
+        .station-switch a:hover { color: var(--ink); }
+        .station-switch a[aria-current="page"] {
+            background: var(--surface);
+            color: var(--ink);
+            font-weight: 600;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+        }
+
+        .topbar-right { display: flex; align-items: center; gap: 8px; flex: none; }
+
+        .ghost-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--ink-2);
+            text-decoration: none;
+            padding: 6px 13px;
+            border: 1px solid var(--hairline);
+            border-radius: 999px;
+            background: transparent;
+            cursor: pointer;
+            transition: background .15s ease, color .15s ease;
+        }
+        .ghost-btn:hover { background: var(--wash); color: var(--ink); }
+        @media (max-width: 560px) { .ghost-btn .label { display: none; } .ghost-btn { padding: 6px 10px; } }
+
+        .icon-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 32px; height: 32px;
+            border: 1px solid var(--hairline);
+            border-radius: 999px;
+            background: transparent;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: background .15s ease, color .15s ease;
+        }
+        .icon-btn:hover { background: var(--wash); color: var(--ink); }
+        .icon-btn svg { width: 15px; height: 15px; }
+        .theme-moon { display: none; }
+
+        /* ---------- layout ---------- */
+
+        .page {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 22px 24px 56px;
+        }
+        @media (max-width: 640px) { .page { padding: 16px 14px 40px; } }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 372px;
+            gap: 20px;
+            align-items: start;
+        }
+        @media (max-width: 1040px) { .layout { grid-template-columns: 1fr; } }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-lg);
+            padding: 20px;
+        }
+
+        .eyebrow {
+            font-size: 12.5px;
+            color: var(--ink-muted);
+            margin-bottom: 3px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 19px;
+            font-weight: 600;
+            letter-spacing: -.015em;
+        }
+
+        h2 { margin: 0; font-size: 15.5px; font-weight: 600; letter-spacing: -.01em; }
+
+        .stage-head {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .stage-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* ---------- buttons ---------- */
+
+        .btn {
+            appearance: none;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--ink-2);
+            background: var(--surface);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-sm);
+            padding: 8px 14px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            transition: background .15s ease, color .15s ease, border-color .15s ease;
+        }
+        .btn:hover { background: var(--wash); color: var(--ink); border-color: var(--hairline-strong); }
+        .btn:disabled { opacity: .55; cursor: default; }
+        .btn svg { width: 14px; height: 14px; }
+
+        .btn-primary {
+            background: var(--series);
+            border-color: var(--series);
+            color: #fff;
+        }
+        .btn-primary:hover { background: color-mix(in srgb, var(--series) 86%, #000); color: #fff; border-color: transparent; }
+
+        .btn-block { width: 100%; padding: 11px 14px; font-size: 14px; }
+
+        .btn-icon {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            flex: none;
+            border-radius: 8px;
+            color: var(--ink-muted);
+        }
+        .btn-icon:hover { color: var(--detected); background: var(--detected-soft); border-color: transparent; }
+
+        /* ---------- stage / canvas ---------- */
+
+        .canvas-wrap {
+            position: relative;
+            background: var(--wash);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-md);
+            overflow: hidden;
+        }
+        #calCanvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            cursor: crosshair;
+            touch-action: none;
+        }
+
+        .loading {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: color-mix(in srgb, var(--surface) 82%, transparent);
+            backdrop-filter: blur(3px);
+            font-size: 13.5px;
+            color: var(--ink-2);
+            z-index: 3;
+        }
+        .loading.is-shown { display: flex; }
+        .spinner {
+            width: 26px; height: 26px;
+            border: 2.5px solid var(--hairline-strong);
+            border-top-color: var(--series);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .stage-foot {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            font-size: 12.5px;
+            color: var(--ink-muted);
+        }
+        .legend { display: inline-flex; align-items: center; gap: 7px; }
+        .legend i { width: 16px; height: 0; border-top-width: 2px; border-top-style: solid; flex: none; }
+        .legend .lg-point { border-top-color: var(--point); }
+        .legend .lg-det { border-top-color: var(--detected); border-top-style: dashed; }
+        .legend .lg-roi {
+            width: 13px; height: 13px;
+            border: 1px dashed var(--series);
+            border-top-style: dashed;
+            border-radius: 3px;
+        }
+
+        .test-result {
+            margin-left: auto;
+            display: none;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 11px;
+            border-radius: 999px;
+            font-size: 12.5px;
+            font-weight: 600;
+            background: var(--wash);
+            color: var(--ink-2);
+        }
+        .test-result.is-shown { display: inline-flex; }
+        .test-result[data-state="ok"] { background: var(--point-soft); color: var(--point); }
+        .test-result[data-state="fail"] { background: var(--detected-soft); color: var(--detected); }
+
+        /* ---------- sidebar ---------- */
+
+        .sidebar { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+        @media (min-width: 1041px) {
+            /* The controls stay next to the image while a line is dragged, but the
+               column scrolls itself when it is taller than the viewport so the
+               buttons at the bottom are never out of reach. */
+            .sidebar {
+                position: sticky;
+                top: 76px;
+                max-height: calc(100vh - 96px);
+                overflow-y: auto;
+                scrollbar-width: thin;
+                padding-right: 2px;
+            }
+        }
+
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+
+        .count-pill, .dirty-pill {
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 999px;
+            background: var(--wash);
+            color: var(--ink-muted);
+            white-space: nowrap;
+        }
+        .dirty-pill {
+            display: none;
+            background: color-mix(in srgb, var(--rise) 12%, transparent);
+            color: var(--rise);
+        }
+        .dirty-pill.is-shown { display: inline-block; }
+
+        .hints {
+            margin: 10px 0 16px;
+            padding: 0;
+            list-style: none;
+            font-size: 13px;
+            color: var(--ink-muted);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .hints li { display: flex; gap: 8px; }
+        .hints li::before {
+            content: "";
+            width: 5px; height: 5px;
+            border-radius: 50%;
+            background: var(--hairline-strong);
+            flex: none;
+            margin-top: 8px;
+        }
+
+        .field-label {
+            display: block;
+            font-size: 11.5px;
+            color: var(--ink-muted);
+            margin-bottom: 4px;
+            letter-spacing: .01em;
+        }
+
+        input[type="number"], input[type="text"], select {
+            font: inherit;
+            font-size: 13px;
+            color: var(--ink);
+            background: var(--plane);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-sm);
+            padding: 7px 9px;
+            width: 100%;
+            min-width: 0;
+            transition: border-color .15s ease;
+        }
+        input:hover, select:hover { border-color: var(--hairline-strong); }
+        input:focus, select:focus { border-color: var(--series); outline: none; }
+        input[type="number"] { font-variant-numeric: tabular-nums; }
+        select { cursor: pointer; -webkit-appearance: none; appearance: none; padding-right: 22px;
+            background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%), linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+            background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%;
+            background-size: 5px 5px, 5px 5px;
+            background-repeat: no-repeat;
+        }
+
+        .num-wrap { position: relative; }
+        .num-wrap .unit {
+            position: absolute;
+            right: 9px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 12px;
+            color: var(--ink-muted);
+            pointer-events: none;
+        }
+        .num-wrap input { padding-right: 24px; }
+
+        /* points */
+
+        .point-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .point-empty {
+            font-size: 13px;
+            color: var(--ink-muted);
+            padding: 14px;
+            text-align: center;
+            border: 1px dashed var(--hairline-strong);
+            border-radius: var(--r-md);
+        }
+
+        .point-item {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            padding: 10px;
+            background: var(--plane);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-md);
+            transition: border-color .15s ease, background .15s ease;
+        }
+        .point-item:hover, .point-item.is-active {
+            border-color: color-mix(in srgb, var(--point) 55%, transparent);
+            background: var(--point-soft);
+        }
+        .point-index {
+            width: 26px; height: 26px;
+            flex: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: var(--point-soft);
+            color: var(--point);
+            font-size: 12px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            margin-bottom: 1px;
+        }
+        .point-fields {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        .card-actions .btn { flex: 1; }
+
+        .fineprint {
+            margin: 10px 0 0;
+            font-size: 12px;
+            color: var(--ink-muted);
+            line-height: 1.45;
+        }
+
+        /* markers */
+
+        .marker-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin: 14px 0 12px;
+        }
+        .marker-empty {
+            font-size: 13px;
+            color: var(--ink-muted);
+            padding: 14px;
+            text-align: center;
+            border: 1px dashed var(--hairline-strong);
+            border-radius: var(--r-md);
+        }
+        .marker-item {
+            display: flex;
+            gap: 10px;
+            padding: 10px;
+            background: var(--plane);
+            border: 1px solid var(--hairline);
+            border-radius: var(--r-md);
+        }
+        .marker-preview {
+            width: 4px;
+            border-radius: 999px;
+            flex: none;
+            background: #57534e;
+        }
+        .marker-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+        .marker-meta { display: flex; align-items: center; gap: 8px; }
+        .marker-meta .num-wrap { width: 92px; flex: none; }
+
+        .dots { display: flex; gap: 5px; margin-left: auto; }
+        .dot {
+            width: 17px; height: 17px;
+            padding: 0;
+            border-radius: 50%;
+            border: 1px solid var(--hairline-strong);
+            background: var(--c);
+            cursor: pointer;
+            opacity: .45;
+            transition: opacity .15s ease, transform .15s ease, box-shadow .15s ease;
+        }
+        .dot:hover { opacity: .8; transform: scale(1.1); }
+        .dot[aria-pressed="true"] {
+            opacity: 1;
+            box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--series);
+        }
+
+        .marker-status {
+            font-size: 12.5px;
+            margin-top: 10px;
+            min-height: 18px;
+            color: var(--ink-muted);
+        }
+        .marker-status[data-state="ok"] { color: var(--fall); }
+        .marker-status[data-state="err"] { color: var(--detected); }
+
+        /* ---------- toasts ---------- */
+
+        .toasts {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 60;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: flex-end;
+            pointer-events: none;
+        }
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 10px 14px;
+            border-radius: var(--r-md);
+            background: var(--surface);
+            border: 1px solid var(--hairline-strong);
+            box-shadow: 0 8px 26px rgba(0, 0, 0, .16);
+            font-size: 13.5px;
+            color: var(--ink);
+            max-width: 340px;
+            opacity: 0;
+            transform: translateY(8px);
+            transition: opacity .2s ease, transform .2s ease;
+        }
+        .toast.is-shown { opacity: 1; transform: none; }
+        .toast i {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--series);
+            flex: none;
+        }
+        .toast[data-state="ok"] i { background: var(--fall); }
+        .toast[data-state="err"] i { background: var(--detected); }
+        @media (max-width: 560px) {
+            .toasts { left: 14px; right: 14px; align-items: stretch; }
+            .toast { max-width: none; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::after { animation: none !important; transition: none !important; }
+        }
     </style>
 </head>
 <body data-station="{{ station_id }}">
 
-<div class="container">
-    <div class="canvas-container" id="canvasContainer">
-        <canvas id="calCanvas"></canvas>
-        <div id="loading" class="loading">Loading Camera Frame...</div>
+<header class="topbar">
+    <div class="brand">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z"/>
+        </svg>
+        <span class="brand-name">River Water Level</span>
+        <span class="brand-sub">Calibration</span>
     </div>
-    
-    <div class="sidebar">
-        <h1>Calibration</h1>
-        <p id="stationLine" style="margin:-8px 0 14px; font-size:14px; color:#555;"></p>
-        <nav id="stationNav" style="margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap;"></nav>
-        <p class="instructions">
-            - Drag the green lines on the image to adjust pixel positions.<br>
-            - Edit the Water Level (m) in the boxes below.<br>
-            - Saving will also set the current frame as the new baseline for homography.
-        </p>
-        
-        <div class="controls">
-            <button class="btn" onclick="addPoint()">+ Add Point</button>
-            <button class="btn" onclick="fetchData()" style="background:#6c757d;">Refresh Image</button>
-        </div>
-        
-        <button class="btn" onclick="testDetection()" style="background:#17a2b8; width: 100%; margin-bottom: 20px;">Test Detection</button>
-        <div id="testResult" style="margin-bottom: 20px; font-weight: bold; color: #dc3545;"></div>
-        
-        <div class="point-list" id="pointList">
-            <!-- Points will be injected here -->
-        </div>
-        
-        <button class="btn btn-success" onclick="saveCalibration()">Save Calibration</button>
 
-        <div class="divider"></div>
+    <nav class="station-switch" id="stationNav" aria-label="Station"></nav>
 
-        <h2>Reference lines</h2>
-        <p class="instructions">
-            Warning levels and past flood marks, drawn across the trend chart on the
-            dashboard. Read them off the markers fixed to the pole.<br>
-            Saved separately &mdash; this does not touch the homography baseline.
-        </p>
-
-        <div id="markerList"></div>
-        <button class="btn" onclick="addMarker()">+ Add line</button>
-        <button class="btn btn-success" onclick="saveMarkers()">Save Reference Lines</button>
-        <div id="markerStatus"></div>
+    <div class="topbar-right">
+        <a class="ghost-btn" id="dashLink" href="/">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/>
+            </svg>
+            <span class="label">Dashboard</span>
+        </a>
+        <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">
+            <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>
+            </svg>
+            <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+            </svg>
+        </button>
     </div>
-</div>
+</header>
+
+<main class="page">
+    <div class="layout">
+
+        <section class="card" aria-labelledby="stationLine">
+            <div class="stage-head">
+                <div>
+                    <div class="eyebrow">Calibration</div>
+                    <h1 id="stationLine">Loading station…</h1>
+                </div>
+                <div class="stage-tools">
+                    <button class="btn" type="button" onclick="fetchData()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>
+                        </svg>
+                        New frame
+                    </button>
+                    <button class="btn" type="button" onclick="testDetection()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+                        </svg>
+                        Test detection
+                    </button>
+                </div>
+            </div>
+
+            <div class="canvas-wrap" id="canvasContainer">
+                <canvas id="calCanvas"></canvas>
+                <div id="loading" class="loading">
+                    <div class="spinner"></div>
+                    <span id="loadingText">Loading camera frame…</span>
+                </div>
+            </div>
+
+            <div class="stage-foot">
+                <span class="legend"><i class="lg-point"></i> Calibration point · drag to adjust</span>
+                <span class="legend"><i class="lg-det"></i> Detected waterline</span>
+                <span class="legend"><i class="lg-roi"></i> Detection region</span>
+                <span id="testResult" class="test-result"></span>
+            </div>
+        </section>
+
+        <aside class="sidebar">
+            <section class="card">
+                <div class="card-head">
+                    <h2>Calibration points</h2>
+                    <span>
+                        <span class="dirty-pill" id="dirtyPill">Unsaved</span>
+                        <span class="count-pill" id="pointCount">0</span>
+                    </span>
+                </div>
+
+                <ul class="hints">
+                    <li>Drag a line on the image, or type an exact pixel below.</li>
+                    <li>Level is metres above datum for that row of the frame.</li>
+                    <li>At least two points are needed before readings can be stored.</li>
+                </ul>
+
+                <div class="point-list" id="pointList"></div>
+
+                <div class="card-actions">
+                    <button class="btn" type="button" onclick="addPoint()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                        Add point
+                    </button>
+                    <button class="btn btn-primary" type="button" id="saveBtn" onclick="saveCalibration()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>
+                        </svg>
+                        Save calibration
+                    </button>
+                </div>
+                <p class="fineprint">Saving also sets the frame on screen as the new homography baseline.</p>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>Reference lines</h2>
+                </div>
+                <p class="fineprint" style="margin-top:4px;">
+                    Warning levels and past flood marks, drawn across the trend chart on the
+                    dashboard. Read them off the markers fixed to the pole. Saved separately —
+                    this does not touch the homography baseline.
+                </p>
+
+                <div class="marker-list" id="markerList"></div>
+
+                <div class="card-actions">
+                    <button class="btn" type="button" onclick="addMarker()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                        Add line
+                    </button>
+                    <button class="btn btn-primary" type="button" onclick="saveMarkers()">Save lines</button>
+                </div>
+                <div class="marker-status" id="markerStatus" role="status"></div>
+            </section>
+        </aside>
+    </div>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
     const STATION = document.body.dataset.station || "";
@@ -88,261 +772,552 @@
     const canvas = document.getElementById('calCanvas');
     const ctx = canvas.getContext('2d');
     const loading = document.getElementById('loading');
-    
-    let imageObj = new Image();
+    const loadingText = document.getElementById('loadingText');
+
+    let imageObj = null;
     let points = [];
+    let roi = null;
     let isDragging = false;
     let dragIndex = -1;
     let hoverIndex = -1;
-    let imgScale = 1;
+    let dirty = false;
 
-    // Load data from backend
+    let testDetectedPixel = null;
+    let testDetectedLevel = null;
+
+    /* ---------- theme ---------- */
+
+    const stored = (() => {
+        try { return localStorage.getItem("wl-theme"); } catch (e) { return null; }
+    })();
+    if (stored === "dark" || stored === "light") {
+        document.documentElement.setAttribute("data-theme", stored);
+    }
+    syncThemeIcon();
+
+    document.getElementById("themeBtn").addEventListener("click", () => {
+        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        const current = document.documentElement.getAttribute("data-theme") || (dark ? "dark" : "light");
+        const next = current === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        try { localStorage.setItem("wl-theme", next); } catch (e) { /* ignore */ }
+        syncThemeIcon();
+        render();
+    });
+
+    function isDark() {
+        const attr = document.documentElement.getAttribute("data-theme");
+        if (attr) return attr === "dark";
+        return matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+
+    function syncThemeIcon() {
+        const dark = isDark();
+        document.querySelector(".theme-sun").style.display = dark ? "none" : "block";
+        document.querySelector(".theme-moon").style.display = dark ? "block" : "none";
+    }
+
+    function token(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    /* ---------- toasts ---------- */
+
+    function toast(message, state) {
+        const wrap = document.getElementById("toasts");
+        const el = document.createElement("div");
+        el.className = "toast";
+        el.dataset.state = state || "info";
+        const dot = document.createElement("i");
+        const text = document.createElement("span");
+        text.textContent = message;
+        el.append(dot, text);
+        wrap.appendChild(el);
+        requestAnimationFrame(() => el.classList.add("is-shown"));
+        setTimeout(() => {
+            el.classList.remove("is-shown");
+            setTimeout(() => el.remove(), 250);
+        }, 3400);
+    }
+
+    function setLoading(on, text) {
+        if (text) loadingText.textContent = text;
+        loading.classList.toggle("is-shown", !!on);
+    }
+
+    function setDirty(on) {
+        dirty = on;
+        document.getElementById("dirtyPill").classList.toggle("is-shown", on);
+    }
+
+    /* ---------- data ---------- */
+
     async function fetchData() {
-        loading.style.display = 'flex';
+        // A refresh reloads the saved points, so unsaved edits would be lost.
+        if (dirty && !window.confirm("Discard the unsaved calibration changes and fetch a new frame?")) {
+            return;
+        }
+        setLoading(true, "Fetching a fresh frame…");
+        testDetectedPixel = testDetectedLevel = null;
+        renderTestResult();
         try {
-            // Get current calibration points
-            const calRes = await fetch(API + '/calibration');
+            const calRes = await fetch(API + '/calibration', { cache: 'no-store' });
             const calData = await calRes.json();
-            points = calData.points.map((p, index) => ({ id: index, pixel: p[0], level: p[1] }));
-            
-            // Get reference frame
-            const imgRes = await fetch(API + '/calibration/frame');
+            points = (calData.points || []).map((p, index) => ({ id: index, pixel: p[0], level: p[1] }));
+            renderSidebar();
+
+            const imgRes = await fetch(API + '/calibration/frame', { cache: 'no-store' });
             const imgData = await imgRes.json();
-            
-            if(imgData.image_url) {
-                imageObj.src = imgData.image_url;
-                imageObj.onload = () => {
-                    initCanvas();
-                    loading.style.display = 'none';
-                };
-            }
+            if (!imgData.image_url) throw new Error(imgData.error || "No frame returned");
+
+            await loadImage(imgData.image_url);
+            setDirty(false);
         } catch (e) {
             console.error("Error fetching data:", e);
-            alert("Failed to load calibration data.");
-            loading.style.display = 'none';
+            toast("Failed to load the camera frame.", "err");
         }
+        setLoading(false);
+    }
+
+    function loadImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => { imageObj = img; initCanvas(); resolve(); };
+            img.onerror = () => reject(new Error("Frame did not decode"));
+            img.src = url;
+        });
     }
 
     function initCanvas() {
-        canvas.width = imageObj.width;
-        canvas.height = imageObj.height;
+        canvas.width = imageObj.naturalWidth || imageObj.width;
+        canvas.height = imageObj.naturalHeight || imageObj.height;
         render();
         renderSidebar();
     }
 
+    /* ---------- canvas ---------- */
+
+    function roundRect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+    }
+
+    function drawChip(text, y, fill, textColor) {
+        ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+        const padX = 8;
+        const w = ctx.measureText(text).width + padX * 2;
+        const h = 21;
+        const x = 10;
+        const cy = Math.min(Math.max(y - h / 2, 4), canvas.height - h - 4);
+
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,.35)";
+        ctx.shadowBlur = 6;
+        roundRect(x, cy, w, h, 6);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = textColor;
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, x + padX, cy + h / 2 + .5);
+        ctx.textBaseline = "alphabetic";
+        return { x, w, top: cy, bottom: cy + h };
+    }
+
+    function drawRoi() {
+        if (!roi) return;
+        const w = canvas.width, h = canvas.height;
+        const xs = Math.max(0, Math.min(roi.x_start, w));
+        const xe = Math.max(xs, Math.min(roi.x_end, w));
+
+        ctx.fillStyle = "rgba(0,0,0,.30)";
+        ctx.fillRect(0, 0, xs, h);
+        ctx.fillRect(xe, 0, w - xe, h);
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(80,160,255,.95)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([7, 5]);
+        ctx.strokeRect(xs + .5, .5, Math.max(0, xe - xs - 1), h - 1);
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+        const label = "ROI x" + Math.round(roi.x_start) + "–" + Math.round(roi.x_end);
+        const tw = ctx.measureText(label).width;
+        const bx = Math.max(4, (xs + xe) / 2 - tw / 2 - 7);
+        roundRect(bx, 8, tw + 14, 19, 6);
+        ctx.fillStyle = "rgba(0,0,0,.62)";
+        ctx.fill();
+        ctx.fillStyle = "#8ec3ff";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, bx + 7, 18);
+        ctx.textBaseline = "alphabetic";
+        ctx.restore();
+    }
+
     function render() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (imageObj.src) {
-            ctx.drawImage(imageObj, 0, 0, canvas.width, canvas.height);
-        }
-        
-        // Draw points
+        if (imageObj) ctx.drawImage(imageObj, 0, 0, canvas.width, canvas.height);
+
+        drawRoi();
+
+        const pointColor = token("--point") || "#22c55e";
+
         points.forEach((p, i) => {
-            const isHover = (i === hoverIndex || i === dragIndex);
-            
+            const y = Math.round(p.pixel);
+            const active = (i === hoverIndex || i === dragIndex);
+
+            // dark underlay keeps the line readable over any part of the photo
             ctx.beginPath();
-            ctx.moveTo(0, p.pixel);
-            ctx.lineTo(canvas.width, p.pixel);
-            ctx.strokeStyle = isHover ? '#ffeb3b' : '#00ff00';
-            ctx.lineWidth = isHover ? 3 : 2;
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.strokeStyle = "rgba(0,0,0,.55)";
+            ctx.lineWidth = active ? 5 : 4;
             ctx.stroke();
-            
-            // Draw label
-            ctx.fillStyle = isHover ? '#ffeb3b' : '#00ff00';
-            ctx.font = '16px Arial';
-            ctx.fillRect(canvas.width - 100, p.pixel - 25, 90, 24);
-            ctx.fillStyle = '#000';
-            ctx.fillText(p.level.toFixed(2) + 'm', canvas.width - 90, p.pixel - 7);
+
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.strokeStyle = active ? (token("--series") || "#2a78d6") : pointColor;
+            ctx.lineWidth = active ? 3 : 2;
+            ctx.stroke();
+
+            drawChip(p.level.toFixed(2) + " m", y,
+                active ? "rgba(0,0,0,.85)" : "rgba(0,0,0,.70)",
+                active ? (token("--series") || "#7db4f0") : "#ffffff");
+
+            if (active) {
+                ctx.beginPath();
+                ctx.arc(canvas.width - 26, y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = active && i === dragIndex ? (token("--series") || "#2a78d6") : pointColor;
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "rgba(0,0,0,.6)";
+                ctx.stroke();
+            }
         });
-        
-        // Draw test detection result if available
+
         if (testDetectedPixel !== null) {
+            const y = Math.round(testDetectedPixel);
+            ctx.save();
             ctx.beginPath();
-            ctx.moveTo(0, testDetectedPixel);
-            ctx.lineTo(canvas.width, testDetectedPixel);
-            ctx.strokeStyle = '#dc3545'; // Red color
-            ctx.lineWidth = 3;
-            ctx.setLineDash([10, 10]); // Dashed line
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.strokeStyle = "rgba(0,0,0,.55)";
+            ctx.lineWidth = 5;
             ctx.stroke();
-            ctx.setLineDash([]); // Reset
-            
-            ctx.fillStyle = '#dc3545';
-            ctx.font = 'bold 16px Arial';
-            ctx.fillText('Detected Level', 10, testDetectedPixel - 10);
+
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.strokeStyle = token("--detected") || "#fb7185";
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([10, 7]);
+            ctx.stroke();
+            ctx.restore();
+
+            const label = testDetectedLevel !== null
+                ? "detected " + testDetectedLevel.toFixed(2) + " m"
+                : "detected";
+            drawChip(label, y, "rgba(190,18,60,.92)", "#ffffff");
         }
     }
+
+    /* ---------- points ---------- */
 
     function renderSidebar() {
         const list = document.getElementById('pointList');
         list.innerHTML = '';
-        
-        // Sort by pixel (top to bottom)
+        document.getElementById('pointCount').textContent = points.length + (points.length === 1 ? " point" : " points");
+
+        // top of the frame first, so the list reads in the same order as the image
         points.sort((a, b) => a.pixel - b.pixel);
-        
+
+        if (!points.length) {
+            const empty = document.createElement('div');
+            empty.className = 'point-empty';
+            empty.textContent = 'No points yet — add at least two to calibrate this station.';
+            list.appendChild(empty);
+            return;
+        }
+
         points.forEach((p, i) => {
-            const div = document.createElement('div');
-            div.className = 'point-item';
-            div.onmouseenter = () => { hoverIndex = i; render(); };
-            div.onmouseleave = () => { hoverIndex = -1; render(); };
-            
-            div.innerHTML = `
-                <div style="width: 30px; font-weight: bold;">#${i+1}</div>
-                <div>
-                    <div><small>Pixel Y:</small></div>
-                    <input type="number" value="${Math.round(p.pixel)}" onchange="updatePixel(${i}, this.value)">
-                </div>
-                <div>
-                    <div><small>Level (m):</small></div>
-                    <input type="number" step="0.1" value="${p.level.toFixed(2)}" onchange="updateLevel(${i}, this.value)">
-                </div>
-                <button class="btn btn-danger" style="margin-left: auto;" onclick="deletePoint(${i})">X</button>
-            `;
-            list.appendChild(div);
+            const row = document.createElement('div');
+            row.className = 'point-item';
+            row.dataset.index = String(i);
+            // Only restyle on hover -- rebuilding the row here would replace the
+            // element under the pointer and fire mouseenter again, forever.
+            row.onmouseenter = () => { hoverIndex = i; syncPointRows(); render(); };
+            row.onmouseleave = () => { hoverIndex = -1; syncPointRows(); render(); };
+
+            const idx = document.createElement('span');
+            idx.className = 'point-index';
+            idx.textContent = String(i + 1);
+
+            const fields = document.createElement('div');
+            fields.className = 'point-fields';
+
+            fields.appendChild(numberField("Pixel Y", Math.round(p.pixel), "", (v) => updatePixel(i, v)));
+            fields.appendChild(numberField("Level", p.level.toFixed(2), "m", (v) => updateLevel(i, v), 0.01));
+
+            const del = document.createElement('button');
+            del.className = 'btn btn-icon';
+            del.type = 'button';
+            del.title = 'Remove point';
+            del.setAttribute('aria-label', 'Remove point ' + (i + 1));
+            del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+            del.onclick = () => { deletePoint(i); };
+
+            row.append(idx, fields, del);
+            list.appendChild(row);
+        });
+
+        syncPointRows();
+    }
+
+    // Mirror the row currently highlighted on the image, and vice versa.
+    function syncPointRows() {
+        document.querySelectorAll('#pointList .point-item').forEach(row => {
+            const i = Number(row.dataset.index);
+            row.classList.toggle('is-active', i === hoverIndex || i === dragIndex);
         });
     }
 
+    function numberField(labelText, value, unit, onCommit, step) {
+        const wrap = document.createElement('label');
+        const cap = document.createElement('span');
+        cap.className = 'field-label';
+        cap.textContent = labelText;
+        wrap.appendChild(cap);
+
+        const holder = document.createElement('div');
+        holder.className = 'num-wrap';
+        const input = document.createElement('input');
+        input.type = 'number';
+        if (step) input.step = String(step);
+        input.value = value;
+        input.onchange = () => onCommit(input.value);
+        holder.appendChild(input);
+        if (unit) {
+            const u = document.createElement('span');
+            u.className = 'unit';
+            u.textContent = unit;
+            holder.appendChild(u);
+        }
+        wrap.appendChild(holder);
+        return wrap;
+    }
+
+    function levelAt(y) {
+        // Seed a new point with the level the current calibration implies at that
+        // row, so "Add point" starts near the right number instead of a guess.
+        if (points.length < 2) return 3.00;
+        const sorted = [...points].sort((a, b) => a.pixel - b.pixel);
+        if (y <= sorted[0].pixel) return sorted[0].level;
+        if (y >= sorted[sorted.length - 1].pixel) return sorted[sorted.length - 1].level;
+        for (let i = 0; i < sorted.length - 1; i++) {
+            const a = sorted[i], b = sorted[i + 1];
+            if (y >= a.pixel && y <= b.pixel) {
+                const t = (b.pixel === a.pixel) ? 0 : (y - a.pixel) / (b.pixel - a.pixel);
+                return a.level + (b.level - a.level) * t;
+            }
+        }
+        return 3.00;
+    }
+
     function addPoint() {
-        points.push({
-            id: Date.now(),
-            pixel: canvas.height - 10,  // Start near the bottom of the canvas
-            level: 3.00
-        });
+        const pixel = imageObj ? Math.round(canvas.height * 0.75) : 100;
+        points.push({ id: Date.now(), pixel: pixel, level: levelAt(pixel) });
+        setDirty(true);
         renderSidebar();
         render();
     }
 
     function deletePoint(index) {
         points.splice(index, 1);
+        setDirty(true);
         renderSidebar();
         render();
     }
 
     function updatePixel(index, val) {
-        points[index].pixel = parseFloat(val);
+        const n = parseFloat(val);
+        if (!isFinite(n)) return;
+        points[index].pixel = n;
+        setDirty(true);
         render();
     }
 
     function updateLevel(index, val) {
-        points[index].level = parseFloat(val);
+        const n = parseFloat(val);
+        if (!isFinite(n)) return;
+        points[index].level = n;
+        setDirty(true);
         render();
     }
 
     async function saveCalibration() {
+        if (points.length < 2) {
+            toast("Add at least two points before saving.", "err");
+            return;
+        }
         const payload = points.map(p => [Math.round(p.pixel), parseFloat(p.level)]);
-        // Sort by pixel before saving
         payload.sort((a, b) => a[0] - b[0]);
-        
+
+        const btn = document.getElementById('saveBtn');
+        btn.disabled = true;
         try {
             const res = await fetch(API + '/calibration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ points: payload })
             });
-            
             if (res.ok) {
-                alert("Calibration saved successfully! New reference frame set.");
+                const data = await res.json();
+                points = (data.points || payload).map((p, i) => ({ id: i, pixel: p[0], level: p[1] }));
+                setDirty(false);
+                renderSidebar();
+                render();
+                toast("Calibration saved · baseline frame updated.", "ok");
             } else {
-                alert("Failed to save calibration.");
+                toast("Failed to save calibration.", "err");
             }
         } catch (e) {
             console.error(e);
-            alert("Error saving calibration.");
+            toast("Error saving calibration.", "err");
+        } finally {
+            btn.disabled = false;
         }
     }
 
-    // Mouse events for dragging
-    canvas.addEventListener('mousedown', (e) => {
+    /* ---------- dragging ---------- */
+
+    function canvasY(e) {
         const rect = canvas.getBoundingClientRect();
-        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-        
-        // Find if we clicked near a line (within 10 pixels)
-        const hitThreshold = 10;
+        return (e.clientY - rect.top) * (canvas.height / rect.height);
+    }
+
+    // Hit tolerance in image pixels, kept at ~12 on screen however far the frame
+    // is scaled down -- a 640x480 camera shown at half size is otherwise fiddly.
+    function hitThreshold() {
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.height) return 12;
+        return Math.max(6, 12 * (canvas.height / rect.height));
+    }
+
+    function hitIndex(y) {
+        const threshold = hitThreshold();
         for (let i = 0; i < points.length; i++) {
-            if (Math.abs(points[i].pixel - y) <= hitThreshold) {
-                isDragging = true;
-                dragIndex = i;
-                break;
-            }
+            if (Math.abs(points[i].pixel - y) <= threshold) return i;
         }
-    });
+        return -1;
+    }
 
-    canvas.addEventListener('mousemove', (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-        
-        if (isDragging && dragIndex !== -1) {
-            points[dragIndex].pixel = y;
-            render();
-            // Debounce or only update sidebar on mouseup to avoid losing input focus
-        } else {
-            // Hover effect
-            let newHover = -1;
-            const hitThreshold = 10;
-            for (let i = 0; i < points.length; i++) {
-                if (Math.abs(points[i].pixel - y) <= hitThreshold) {
-                    newHover = i;
-                    break;
-                }
-            }
-            if (newHover !== hoverIndex) {
-                hoverIndex = newHover;
-                render();
-            }
-        }
-    });
-
-    canvas.addEventListener('mouseup', () => {
-        if (isDragging) {
-            isDragging = false;
-            dragIndex = -1;
-            renderSidebar(); // Update the input boxes with new pixel values
-        }
-    });
-    
-    canvas.addEventListener('mouseleave', () => {
-        if (isDragging) {
-            isDragging = false;
-            dragIndex = -1;
-            renderSidebar();
-        }
-        hoverIndex = -1;
+    canvas.addEventListener('pointerdown', (e) => {
+        const hit = hitIndex(canvasY(e));
+        if (hit === -1) return;
+        isDragging = true;
+        dragIndex = hit;
+        hoverIndex = hit;
+        canvas.setPointerCapture(e.pointerId);
+        syncPointRows();
         render();
+        e.preventDefault();
     });
 
-    let testDetectedPixel = null;
+    canvas.addEventListener('pointermove', (e) => {
+        const y = canvasY(e);
+        if (isDragging && dragIndex !== -1) {
+            points[dragIndex].pixel = Math.min(Math.max(y, 0), canvas.height);
+            setDirty(true);
+            render();
+            return;
+        }
+        const next = hitIndex(y);
+        if (next !== hoverIndex) {
+            hoverIndex = next;
+            canvas.style.cursor = next === -1 ? "crosshair" : "ns-resize";
+            syncPointRows();
+            render();
+        }
+    });
+
+    function endDrag() {
+        if (!isDragging) return;
+        isDragging = false;
+        dragIndex = -1;
+        renderSidebar();   // write the new pixel back into the row's input
+        render();
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('pointerleave', () => {
+        endDrag();
+        if (hoverIndex !== -1) {
+            hoverIndex = -1;
+            syncPointRows();
+            render();
+        }
+    });
+
+    /* ---------- test detection ---------- */
+
+    function renderTestResult() {
+        const el = document.getElementById('testResult');
+        if (testDetectedPixel === null) {
+            // keep a failure message visible until the next test/refresh
+            return;
+        }
+        el.className = 'test-result is-shown';
+        el.dataset.state = 'ok';
+        el.textContent = 'Waterline at y ' + Math.round(testDetectedPixel) +
+            (testDetectedLevel !== null ? " · " + testDetectedLevel.toFixed(2) + " m" : "");
+    }
 
     async function testDetection() {
-        loading.style.display = 'flex';
-        document.getElementById('testResult').innerText = "Testing...";
-        testDetectedPixel = null;
-        render(); // clear old test line
+        setLoading(true, "Running detection…");
+        const el = document.getElementById('testResult');
+        testDetectedPixel = testDetectedLevel = null;
+        el.className = 'test-result is-shown';
+        el.dataset.state = '';
+        el.textContent = 'Testing…';
+        render();
         try {
-            // We can call /debug-water to test the detection
-            const res = await fetch('/debug-water/' + STATION);
+            const res = await fetch('/debug-water/' + STATION, { cache: 'no-store' });
             const data = await res.json();
-            
+
             if (data.detection_success && data.detected_y_pixel !== null) {
                 testDetectedPixel = data.detected_y_pixel;
-                document.getElementById('testResult').innerText = `Detected Water Level at Y: ${testDetectedPixel} (${data.water_level_meters ? data.water_level_meters.toFixed(2) + 'm' : 'N/A'})`;
+                testDetectedLevel = (typeof data.water_level_meters === "number") ? data.water_level_meters : null;
+                renderTestResult();
             } else {
-                document.getElementById('testResult').innerText = "Detection failed. Could not find water level.";
+                el.dataset.state = 'fail';
+                el.textContent = 'Detection failed — no waterline found in this frame.';
             }
             render();
         } catch (e) {
             console.error(e);
-            document.getElementById('testResult').innerText = "Error calling detection API.";
+            el.dataset.state = 'fail';
+            el.textContent = 'Could not reach the detection API.';
         }
-        loading.style.display = 'none';
+        setLoading(false);
     }
 
-    // ---------- reference lines ----------
+    /* ---------- reference lines ---------- */
 
     var MARKER_SWATCH = { red: "#be123c", orange: "#ea580c", yellow: "#a16207", grey: "#57534e" };
     var markers = [];
 
     async function loadMarkers() {
         try {
-            const res = await fetch(API + "/markers");
+            const res = await fetch(API + "/markers", { cache: "no-store" });
             const data = await res.json();
             markers = Array.isArray(data.markers) ? data.markers : [];
         } catch (e) {
@@ -355,58 +1330,101 @@
         const list = document.getElementById("markerList");
         list.innerHTML = "";
 
+        if (!markers.length) {
+            const empty = document.createElement("div");
+            empty.className = "marker-empty";
+            empty.textContent = "No reference lines yet.";
+            list.appendChild(empty);
+            return;
+        }
+
         markers.forEach((m, i) => {
             const row = document.createElement("div");
             row.className = "marker-item";
 
-            const swatch = document.createElement("span");
-            swatch.className = "swatch";
-            swatch.style.background = MARKER_SWATCH[m.color] || MARKER_SWATCH.grey;
+            const preview = document.createElement("span");
+            preview.className = "marker-preview";
+            preview.style.background = MARKER_SWATCH[m.color] || MARKER_SWATCH.grey;
+
+            const body = document.createElement("div");
+            body.className = "marker-body";
 
             const label = document.createElement("input");
             label.type = "text";
             label.value = m.label;
             label.placeholder = "e.g. ก.ย. 2565";
+            label.setAttribute("aria-label", "Label");
             label.oninput = () => { markers[i].label = label.value; };
+            body.appendChild(label);
 
+            const meta = document.createElement("div");
+            meta.className = "marker-meta";
+
+            const levelWrap = document.createElement("div");
+            levelWrap.className = "num-wrap";
             const level = document.createElement("input");
             level.type = "number";
             level.step = "0.01";
             level.value = m.level;
+            level.setAttribute("aria-label", "Level");
             level.oninput = () => { markers[i].level = parseFloat(level.value); };
+            const unit = document.createElement("span");
+            unit.className = "unit";
+            unit.textContent = "m";
+            levelWrap.append(level, unit);
+            meta.appendChild(levelWrap);
 
-            const color = document.createElement("select");
+            const dots = document.createElement("div");
+            dots.className = "dots";
+            dots.setAttribute("role", "group");
+            dots.setAttribute("aria-label", "Colour");
             ["red", "orange", "yellow", "grey"].forEach(c => {
-                const opt = document.createElement("option");
-                opt.value = c;
-                opt.textContent = c;
-                if (c === m.color) opt.selected = true;
-                color.appendChild(opt);
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "dot";
+                b.style.setProperty("--c", MARKER_SWATCH[c]);
+                b.title = c;
+                b.setAttribute("aria-label", c);
+                b.setAttribute("aria-pressed", String(c === m.color));
+                b.onclick = () => {
+                    markers[i].color = c;
+                    preview.style.background = MARKER_SWATCH[c];
+                    Array.prototype.forEach.call(dots.children, d =>
+                        d.setAttribute("aria-pressed", String(d.getAttribute("aria-label") === c)));
+                };
+                dots.appendChild(b);
             });
-            color.onchange = () => {
-                markers[i].color = color.value;
-                swatch.style.background = MARKER_SWATCH[color.value];
-            };
+            meta.appendChild(dots);
+            body.appendChild(meta);
 
             const del = document.createElement("button");
-            del.className = "btn btn-danger";
-            del.textContent = "X";
+            del.className = "btn btn-icon";
+            del.type = "button";
+            del.title = "Remove line";
+            del.setAttribute("aria-label", "Remove line");
+            del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
             del.onclick = () => { markers.splice(i, 1); renderMarkers(); };
 
-            [swatch, label, level, color, del].forEach(el => row.appendChild(el));
+            row.append(preview, body, del);
             list.appendChild(row);
         });
     }
 
     function addMarker() {
-        markers.push({ label: "", level: 2.5, color: "yellow" });
+        // Default the new line to just under the lowest calibrated level.
+        let level = 2.5;
+        if (points.length) {
+            const levels = points.map(p => p.level);
+            level = Math.round((Math.min.apply(null, levels) - 0.1) * 100) / 100;
+        }
+        markers.push({ label: "", level: level, color: "yellow" });
         renderMarkers();
     }
 
     async function saveMarkers() {
         const status = document.getElementById("markerStatus");
-        status.style.color = "#333";
-        status.textContent = "Saving...";
+        status.dataset.state = "";
+        status.textContent = "Saving…";
         try {
             const res = await fetch(API + "/markers", {
                 method: "POST",
@@ -415,45 +1433,59 @@
             });
             const data = await res.json();
             if (!res.ok) {
-                status.style.color = "#dc3545";
+                status.dataset.state = "err";
                 status.textContent = data.error || "Failed to save.";
                 return;
             }
             markers = data.markers;
             renderMarkers();
-            status.style.color = "#28a745";
+            status.dataset.state = "ok";
             status.textContent = "Saved " + markers.length + " reference line(s).";
         } catch (e) {
             console.error(e);
-            status.style.color = "#dc3545";
+            status.dataset.state = "err";
             status.textContent = "Error saving reference lines.";
         }
     }
 
+    /* ---------- stations ---------- */
+
     async function loadStations() {
+        document.getElementById("dashLink").href = "/s/" + STATION;
         try {
-            const res = await fetch("/api/stations");
+            const res = await fetch("/api/stations", { cache: "no-store" });
             const data = await res.json();
-            const current = (data.stations || []).find(s => s.id === STATION);
-            document.getElementById("stationLine").textContent =
-                current ? `Station: ${current.name.en || current.id} (gauge at x ${current.roi.x_start}-${current.roi.x_end})` : "";
+            const list = data.stations || [];
+            const current = list.find(s => s.id === STATION) || list[0];
+
+            if (current) {
+                roi = current.roi || null;
+                const name = (current.name && (current.name.en || current.name.th)) || current.id;
+                const range = roi ? " · gauge at x " + roi.x_start + "–" + roi.x_end : "";
+                document.getElementById("stationLine").textContent = name + range;
+                document.title = "Calibrate · " + name;
+            }
 
             const nav = document.getElementById("stationNav");
             nav.innerHTML = "";
-            if ((data.stations || []).length < 2) return;
-            data.stations.forEach(st => {
-                const a = document.createElement("a");
-                a.href = "/calibrate/" + st.id;
-                a.textContent = st.name.en || st.id;
-                a.className = "btn";
-                if (st.id !== STATION) a.style.background = "#6c757d";
-                a.style.textDecoration = "none";
-                nav.appendChild(a);
-            });
-        } catch (e) { console.error("Failed to load stations", e); }
+            // A switch with one station is just noise.
+            if (list.length >= 2) {
+                list.forEach(st => {
+                    const a = document.createElement("a");
+                    a.href = "/calibrate/" + st.id;
+                    a.textContent = (st.name && (st.name.en || st.name.th)) || st.id;
+                    if (st.id === STATION) a.setAttribute("aria-current", "page");
+                    nav.appendChild(a);
+                });
+            }
+            render();   // the ROI band depends on it
+        } catch (e) {
+            console.error("Failed to load stations", e);
+        }
     }
 
-    // Initial load
+    /* ---------- boot ---------- */
+
     loadStations();
     fetchData();
     loadMarkers();
