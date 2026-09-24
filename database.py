@@ -61,6 +61,25 @@ def latest_readings(station_id, limit):
     return sorted(docs, key=lambda d: d["timestamp"])
 
 
+def reading_near(station_id, timestamp, window):
+    """
+    The capture closest to `timestamp`, within `window` seconds either side.
+
+    A chart point on a long range is an average over a bucket and has no single
+    frame behind it, so clicking one asks for the nearest actual capture instead.
+    """
+    timestamp = int(timestamp)
+    candidates = list(_readings.find(
+        {"station": station_id,
+         "timestamp": {"$gte": timestamp - window, "$lte": timestamp + window}},
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1},
+    ).sort("timestamp", ASCENDING))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda d: abs(d["timestamp"] - timestamp))
+
+
 # Smallest bucket first. A three-year span holds ~315k readings, so anything past a
 # couple of days has to be aggregated before it can reach a browser or a chart.
 _BUCKETS = [300, 900, 1800, 3600, 10800, 21600, 43200, 86400, 259200]

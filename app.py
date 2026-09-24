@@ -1416,6 +1416,25 @@ def get_recent(station_id=None):
     """Raw recent readings, for the current value and the capture strip."""
     return jsonify(database.latest_readings(resolve_station(station_id).id, RECENT_LIMIT))
 
+@app.route('/api/reading', methods=['GET'])
+@app.route('/api/<station_id>/reading', methods=['GET'])
+def get_reading(station_id=None):
+    """The capture nearest a moment, so a point on the chart can show its frame."""
+    station = resolve_station(station_id)
+    try:
+        at = int(request.args.get("at", ""))
+    except ValueError:
+        return jsonify({"error": "at must be unix seconds"}), 400
+
+    # Wide enough to land inside the bucket a long-range chart point covers,
+    # capped so a click on an empty stretch does not drag back a distant frame.
+    window = max(600, min(int(request.args.get("window", 1800)), 6 * 3600))
+
+    reading = database.reading_near(station.id, at, window)
+    if not reading:
+        return jsonify({"error": "no capture near that time"}), 404
+    return jsonify(reading)
+
 @app.route('/api/history', methods=['GET'])
 @app.route('/api/<station_id>/history', methods=['GET'])
 def get_history(station_id=None):
