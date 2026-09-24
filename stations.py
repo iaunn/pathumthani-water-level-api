@@ -12,6 +12,7 @@ import threading
 from urllib.parse import urljoin
 
 import cv2
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 CONFIG_FILE = os.getenv("STATIONS_FILE", "stations.json")
 
@@ -23,9 +24,20 @@ class Station:
     def __init__(self, cfg):
         self.id = cfg["id"]
         self.name = cfg.get("name") or {"en": cfg["id"]}
-        self.playlist_url = cfg["playlist_url"]
+        # A station is fed either an HLS playlist or a still-image endpoint. The
+        # network cameras only offer the latter, behind digest auth.
+        self.playlist_url = cfg.get("playlist_url")
+        self.snapshot_url = cfg.get("snapshot_url")
+        if not (self.playlist_url or self.snapshot_url):
+            raise RuntimeError(f"Station '{self.id}' needs a playlist_url or a snapshot_url.")
+
         # Segment paths in a playlist are usually relative to the playlist itself.
-        self.base_url = urljoin(self.playlist_url, ".")
+        self.base_url = urljoin(self.playlist_url, ".") if self.playlist_url else None
+
+        # Credentials never live in this file; it is committed. The station names
+        # an environment variable holding "user:password" instead.
+        self.auth_scheme = (cfg.get("auth") or "").lower()
+        self.credentials_env = cfg.get("credentials_env") or f"STATION_{self.id.upper()}_CREDENTIALS"
 
         roi = cfg.get("roi") or {}
         self.x_start = int(roi.get("x_start", 0))
@@ -40,6 +52,32 @@ class Station:
         self.detection_history = []
         self.previous_level = 0.0
         self.lock = threading.Lock()
+
+    @property
+    def is_snapshot(self):
+        return bool(self.snapshot_url)
+
+    @property
+    def auth(self):
+        """requests auth for this station, or None when it needs no credentials."""
+        if not self.auth_scheme:
+            return None
+
+        raw = os.getenv(self.credentials_env)
+        if not raw or ":" not in raw:
+            raise RuntimeError(
+                f"Station '{self.id}' uses {self.auth_scheme} auth but "
+                f"{self.credentials_env} is not set to 'user:password'."
+            )
+
+        user, _, password = raw.partition(":")
+        if self.auth_scheme == "digest":
+            return HTTPDigestAuth(user, password)
+        if self.auth_scheme == "basic":
+            return HTTPBasicAuth(user, password)
+        raise RuntimeError(
+            f"Station '{self.id}' has unknown auth '{self.auth_scheme}'; use digest or basic."
+        )
 
     @property
     def capture_prefix(self):
@@ -82,7 +120,12 @@ def load():
     if _default_id not in _stations:
         raise RuntimeError(f"Default station '{_default_id}' is not in {CONFIG_FILE}.")
 
-    print("Stations: " + ", ".join(f"{s.id} (x{s.x_start}-{s.x_end})" for s in _stations.values()))
+    for station in _stations.values():
+        station.auth   # fail at boot, not five minutes later, if credentials are missing
+
+    print("Stations: " + ", ".join(
+        f"{s.id} ({'snapshot' if s.is_snapshot else 'hls'}, x{s.x_start}-{s.x_end})"
+        for s in _stations.values()))
     return _stations
 
 
