@@ -237,6 +237,12 @@ def level_to_pixel(station, level_m: float) -> float:
 # =========================
 # Homography Alignment
 # =========================
+# Warping every frame onto a stored baseline costs an ORB pass and a warp per
+# capture, plus a baseline upload each time the calibration view opens. A camera
+# bolted in place never drifts, so HOMOGRAPHY_ENABLED=false skips all of that and
+# detection runs on the frame exactly as it came.
+HOMOGRAPHY_ENABLED = os.getenv("HOMOGRAPHY_ENABLED", "true").lower() not in ("false", "0", "no")
+
 def _adopt_reference(station, frame):
     """Hold `frame` in memory as the station's homography baseline."""
     gray_ref = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -264,6 +270,11 @@ def init_reference_frame(station, frame):
 
 def align_image(station, frame):
     """Align the given frame to the station's reference frame using ORB feature matching."""
+    if not HOMOGRAPHY_ENABLED:
+        # Flag off: the camera does not move, so there is no offset to undo --
+        # and no reference frame to fetch or adopt either.
+        return frame
+
     if station.reference["image"] is None:
         init_reference_frame(station, frame)
         return frame # First frame is reference
@@ -1708,9 +1719,12 @@ def get_calibration_frame(station_id=None):
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
-        # Set this new frame as the reference for homography
-        with station.lock:
-            set_reference_frame(station, original_frame)
+        # Set this new frame as the reference for homography -- skipped when the
+        # flag has it off: there is no baseline to keep, and turning it back on
+        # later adopts the next frame on its own.
+        if HOMOGRAPHY_ENABLED:
+            with station.lock:
+                set_reference_frame(station, original_frame)
 
         # Save frame to return to UI
         image_url = store_frame(station, original_frame, "calibration_frame")
