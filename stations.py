@@ -48,6 +48,19 @@ class Station:
         self.auth_scheme = (cfg.get("auth") or "").lower()
         self.credentials_env = cfg.get("credentials_env") or f"STATION_{self.id.upper()}_CREDENTIALS"
 
+        # What the detector may rely on at this site. "yellow" means a painted
+        # staff that the colour mask can find, and the reading has to stand
+        # where that paint stops; "none" means the staff carries no colour that
+        # separates it from its surroundings -- the red and white staffs under
+        # the two bridges read as red as the muddy river and as pale as the
+        # concrete -- so it is measured by its graduation bands alone. Left out,
+        # the detector decides per frame, which is how it behaved before.
+        self.staff_paint = cfg.get("staff_paint")
+        if self.staff_paint not in (None, "yellow", "none"):
+            raise RuntimeError(
+                f"Station '{self.id}' has staff_paint '{self.staff_paint}'; "
+                f"use 'yellow', 'none', or leave it out.")
+
         # All four edges, in frame pixels: x runs left to right, y top to bottom.
         # stations.json usually carries only the columns, so the rows default to
         # the whole frame.
@@ -160,6 +173,7 @@ class Station:
             "name": self.name,
             "source": self.source,
             "roi": self.roi,
+            "staff_paint": self.staff_paint,
             "detection_mode": self.detection_mode,
         }
 

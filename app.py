@@ -122,7 +122,8 @@ def background_tracker(station):
                     raw_y = detect_water_level_on_gauge(
                         aligned_frame, station.x_start, station.x_end,
                         y_start=station.y_start, y_end=station.y_end,
-                        frames=aligned_segment, meta=meta)
+                        frames=aligned_segment, meta=meta,
+                        staff_paint=station.staff_paint)
                     # Nothing behind it. The gauge detector refusing -- the
                     # colour check failed, or the region holds no staff -- is
                     # the honest answer, and the cascade that used to run here
@@ -894,9 +895,36 @@ def _mask_bottom(mask, top, end, coverage=0.15, sustain=4, window=12):
     return bottom
 
 
+def _bands_readable(image, left, right, top, waterline, span=40, gap=5, floor=15.0):
+    """Whether the graduations are actually legible where a colourless staff was read.
+
+    A staff with no colour to check against is measured by its bands alone, and
+    nothing then says whether those bands were ever visible. Under the bridges
+    they often are not: the same camera that resolved the graduations at 30-34
+    levels of row-to-row contrast by day fell to 5-12 after dark, and the
+    readings fell apart with them -- above 15 the twelve readings sat inside
+    25px of each other, 14cm on a tidal river, while the ten below it sprayed
+    across 125px, 0.71m. Bridge 2 never reaches 15 at all, which is the truth
+    about that camera: its staff runs dry past the bottom of the frame and the
+    river is not in shot, so every reading it has filed was the scan running out
+    of staff.
+
+    Measured just above the reading, where the staff must still be dry.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
+    if gray.shape[0] < 2:
+        return False
+    edges = _smooth(np.abs(np.diff(gray, axis=0)).mean(axis=1), 5)
+    high = min(max(waterline - gap, top + 1), len(edges))
+    low = max(top, high - span)
+    if high - low < 10:
+        return False
+    return float(edges[low:high].mean()) >= floor
+
+
 def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=None,
                                 frames=None, texture_drop=0.5, sustain_rows=9,
-                                motion_ratio=3.0, meta=None):
+                                motion_ratio=3.0, meta=None, staff_paint=None):
     """
     Find the waterline by where the gauge staff stops looking like a gauge staff.
 
@@ -940,8 +968,12 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     it was; `meta["mode"]` records which of the two ran.
     """
     ys, ye = _roi_rows(image, y_start, y_end)
-    yellow = _yellow_column(image, x_start, x_end, ys, ye)
-    if yellow is None and _loose_yellow_staff(image, x_start, x_end, ys, ye):
+    # A station that declares a painted staff is held to it: no yellow means no
+    # reading, rather than a quiet fall through to texture that would measure
+    # whatever else shares the box.
+    yellow = None if staff_paint == "none" else _yellow_column(image, x_start, x_end, ys, ye)
+    if yellow is None and staff_paint != "none" and (
+            staff_paint == "yellow" or _loose_yellow_staff(image, x_start, x_end, ys, ye)):
         # The staff is in the box but washed out of the reading mask -- heavy
         # rain took its saturation to p50 79 on a frame where it stayed bright.
         # Texture alone would then measure whatever else shares the box: it
@@ -1012,6 +1044,12 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     # dark frame or a gauge out of shot still reports nothing.
     if not collapsed:
         return bottom
+
+    # A colourless staff has no paint edge to check the reading against, so the
+    # one thing left to ask is whether its graduations were legible at all.
+    if waterline is not None and mask is None and not _bands_readable(
+            image, left, right, top, waterline):
+        return None
 
     # One frame, or the same frame several times over, carries no motion to
     # measure; the correction would read stillness everywhere and stand aside.
@@ -1199,12 +1237,14 @@ def visualize_detection_debug(image, x_start=225, x_end=390, y_start=0, y_end=No
     
     return debug_image
 
-def visualize_water_level_debug(image, x_start=225, x_end=390, y_start=0, y_end=None):
+def visualize_water_level_debug(image, x_start=225, x_end=390, y_start=0, y_end=None,
+                                staff_paint=None):
     """Create detailed visualization of water level detection process."""
     ys, ye = _roi_rows(image, y_start, y_end)
 
     # Run water level detection
-    detected_y = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye)
+    detected_y = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye,
+                                             staff_paint=staff_paint)
     
     # Create visualization image
     debug_img = image.copy()
@@ -1505,7 +1545,8 @@ def get_status(station_id=None):
         meta = {}
         raw_detection = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
-            y_start=station.y_start, y_end=station.y_end, meta=meta)
+            y_start=station.y_start, y_end=station.y_end, meta=meta,
+            staff_paint=station.staff_paint)
         # The same detector the tracker uses: "gauge" (colour + texture) or
         # "blind" (texture only), and nothing when it declines to answer. The
         # cascade that used to sit behind this endpoint guessed -- 885 px with
@@ -1622,14 +1663,15 @@ def debug_water_level(station_id=None):
         meta = {}
         detected_y = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
-            y_start=station.y_start, y_end=station.y_end, meta=meta)
+            y_start=station.y_start, y_end=station.y_end, meta=meta,
+            staff_paint=station.staff_paint)
         station.detection_mode = (meta.get("mode") if detected_y is not None
                                   else "none")
         
         # Create water level debug visualization
         debug_image = visualize_water_level_debug(
             aligned_frame, station.x_start, station.x_end,
-            station.y_start, station.y_end)
+            station.y_start, station.y_end, staff_paint=station.staff_paint)
         
         # Save debug image
         water_level_debug_url = store_frame(station, debug_image, "water_level_debug")
