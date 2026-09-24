@@ -7,6 +7,7 @@
         "en": "Pathumthani",
         "th": "สวนเทพปทุม"
       },
+      "staff_paint": "yellow",
       "source": "http://101.109.253.60:8999",
       "playlist_url": "http://101.109.253.60:8999/playlist.m3u8",
       "roi": {
@@ -20,6 +21,7 @@
         "en": "Pathum Thani Bridge 1",
         "th": "สะพานปทุมธานี 1"
       },
+      "staff_paint": "none",
       "source": "https://telemetry.dwr.go.th/reportCctv",
       "snapshot_url": "http://ta100219.dyndns.info:5001/jpg/image.jpg",
       "auth": "digest",
@@ -35,6 +37,7 @@
         "en": "Pathum Thani Bridge 2",
         "th": "สะพานปทุมธานี 2"
       },
+      "staff_paint": "none",
       "source": "https://telemetry.dwr.go.th/reportCctv",
       "snapshot_url": "http://tc100224.dyndns.info:5001/jpg/image.jpg",
       "auth": "digest",
@@ -52,6 +55,7 @@
         "en": "Rangsit",
         "th": "รังสิต"
       },
+      "staff_paint": "yellow",
       "source": "https://ipcamlive.com/68c13eaeec104",
       "snapshot_url": "https://ipcamlive.com/player/snapshot.php?alias=68c13eaeec104",
       "roi": {
