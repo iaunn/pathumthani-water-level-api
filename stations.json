@@ -3,9 +3,31 @@
   "stations": [
     {
       "id": "pathumthani",
-      "name": { "en": "Pathumthani", "th": "ปทุมธานี" },
+      "name": {
+        "en": "Pathumthani",
+        "th": "สวนเทพปทุม"
+      },
+      "source": "http://101.109.253.60:8999",
       "playlist_url": "http://101.109.253.60:8999/playlist.m3u8",
-      "roi": { "x_start": 225, "x_end": 390 }
+      "roi": {
+        "x_start": 225,
+        "x_end": 390
+      }
+    },
+    {
+      "id": "pathumbridge1",
+      "name": {
+        "en": "Pathum Thani Bridge 1",
+        "th": "สะพานปทุมธานี 1"
+      },
+      "source": "https://telemetry.dwr.go.th/reportCctv",
+      "snapshot_url": "http://ta100219.dyndns.info:5001/jpg/image.jpg",
+      "auth": "digest",
+      "credentials_env": "STATION_PATHUMBRIDGE_CREDENTIALS",
+      "roi": {
+        "x_start": 600,
+        "x_end": 740
+      }
     }
   ]
 }

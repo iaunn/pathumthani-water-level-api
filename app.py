@@ -85,37 +85,44 @@ def background_tracker(station):
             print(f"[{station.id}] running background water level check...")
             # picks up calibration saved by another replica
             load_calibration(station)
-            video_url = get_video_url(station)
-            if video_url:
-                # Several frames, not one: still water mirrors the staff, and only
-                # the reflection moves between them.
-                segment = capture_frames_from_video(video_url)
-                frame = segment[-1] if segment else capture_last_frame_from_video(video_url)
-                if frame is not None:
-                    with station.lock:
-                        aligned_frame = align_image(station, frame)
-                        aligned_segment = [align_image(station, f) for f in segment] or None
-                        raw_y = detect_water_level_on_gauge(
-                            aligned_frame, station.x_start, station.x_end,
-                            frames=aligned_segment)
-                        if raw_y is None:
-                            raw_y = detect_yellow_regions_fused(
-                                aligned_frame, station.x_start, station.x_end)
 
-                        y = smooth_detection(station, raw_y)
+            if not station.cal_points:
+                # Without calibration a pixel row converts to a meaningless
+                # level, which is worse on a flood dashboard than no reading.
+                print(f"[{station.id}] no calibration yet, skipping")
+                time.sleep(300)
+                continue
 
-                    if y is not None:
-                        level = float(pixel_to_level(station, float(y)))
+            # Several frames, not one: still water mirrors the staff, and only
+            # the reflection moves between them.
+            segment = capture_station_frames(station)
+            frame = segment[-1] if segment else None
 
-                        timestamp = int(time.time())
-                        image_url = store_frame(station, aligned_frame, "history", f"_{timestamp}")
+            if frame is not None:
+                with station.lock:
+                    aligned_frame = align_image(station, frame)
+                    aligned_segment = [align_image(station, f) for f in segment] or None
+                    raw_y = detect_water_level_on_gauge(
+                        aligned_frame, station.x_start, station.x_end,
+                        frames=aligned_segment)
+                    if raw_y is None:
+                        raw_y = detect_yellow_regions_fused(
+                            aligned_frame, station.x_start, station.x_end)
 
-                        # "y" lets the dashboard draw the detected waterline over
-                        # the frame, so a wrong reading is visible rather than implied.
-                        database.add_reading(station.id, timestamp, level, image_url, y)
-                        database.prune_readings(station.id, RETENTION_DAYS)
-                        rotate_images(station)
-                        print(f"[{station.id}] check successful. Level: {level:.2f}m")
+                    y = smooth_detection(station, raw_y)
+
+                if y is not None:
+                    level = float(pixel_to_level(station, float(y)))
+
+                    timestamp = int(time.time())
+                    image_url = store_frame(station, aligned_frame, "history", f"_{timestamp}")
+
+                    # "y" lets the dashboard draw the detected waterline over
+                    # the frame, so a wrong reading is visible rather than implied.
+                    database.add_reading(station.id, timestamp, level, image_url, y)
+                    database.prune_readings(station.id, RETENTION_DAYS)
+                    rotate_images(station)
+                    print(f"[{station.id}] check successful. Level: {level:.2f}m")
         except Exception as e:
             # One station's camera going down must not stop the others.
             print(f"[{station.id}] background tracker error: {e}")
@@ -132,7 +139,13 @@ def pixel_to_level(station, y: float) -> float:
     """
     Piecewise-linear interpolation from pixel (y, from top) to water level (m).
     Extrapolates using the nearest segment if y is outside calibration range.
+
+    Raises when the station has not been calibrated: a station is added before
+    anyone sets its points, and a made-up level is worse than a refusal.
     """
+    if len(station.cal_points) < 2:
+        raise RuntimeError(f"Station '{station.id}' has no calibration yet.")
+
     # exact match
     for py, lv in station.cal_points:
         if y == py:
@@ -165,6 +178,9 @@ def level_to_pixel(station, level_m: float) -> float:
     Inverse mapping: given a level (m), return pixel y (from top).
     Piecewise-linear using the same calibration points.
     """
+    if len(station.cal_points) < 2:
+        raise RuntimeError(f"Station '{station.id}' has no calibration yet.")
+
     # exact match
     for py, lv in station.cal_points:
         if abs(level_m - lv) < 1e-9:
@@ -1018,6 +1034,60 @@ def draw_reference_ticks(station, image, y_detected):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         lvl -= 0.1
 
+def fetch_snapshot(station):
+    """One JPEG from a still-image camera endpoint."""
+    response = requests.get(station.snapshot_url, auth=station.auth, timeout=15)
+    response.raise_for_status()
+    frame = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        print(f"[{station.id}] snapshot did not decode as an image")
+    return frame
+
+
+def capture_snapshots(station, count=6, spacing=0.4):
+    """
+    Several stills in quick succession.
+
+    A snapshot endpoint hands back one frame per request, but the waterline needs
+    a few moments apart to tell moving water from a reflection of the staff.
+    """
+    frames = []
+    for i in range(count):
+        if i:
+            time.sleep(spacing)
+        try:
+            frame = fetch_snapshot(station)
+        except requests.RequestException as e:
+            print(f"[{station.id}] snapshot request failed: {e}")
+            break
+        if frame is None:
+            break
+        frames.append(frame)
+    return frames
+
+
+def capture_station_frame(station):
+    """A single current frame, whichever way this station's camera is reached."""
+    if station.is_snapshot:
+        return fetch_snapshot(station)
+
+    video_url = get_video_url(station)
+    if not video_url:
+        return None
+    return capture_last_frame_from_video(video_url)
+
+
+def capture_station_frames(station, count=10):
+    """Frames for one station, whichever way its camera is reached."""
+    if station.is_snapshot:
+        return capture_snapshots(station, count=min(count, 6))
+
+    video_url = get_video_url(station)
+    if not video_url:
+        return []
+    return capture_frames_from_video(video_url, count)
+
+
 def capture_frames_from_video(video_url, count=10):
     """A handful of frames spread across the segment, for telling water from a
     reflection. Returns [] rather than raising if the segment will not open."""
@@ -1115,17 +1185,22 @@ def rotate_images(station):
     except Exception as e:
         print(f"Error pruning captures for {station.id}: {e}")
 
-def generate_water_level_line_image(original_image, y_lowest_yellow, water_level):
+def generate_water_level_line_image(station, original_image, y_lowest_yellow, water_level):
     """Generate an image that shows only the water level line matching the detected level."""
     water_level_image = original_image.copy()
     if water_level is not None:
-        y = int(level_to_pixel(water_level))
+        y = int(level_to_pixel(station, water_level))
         line_color = (0, 255, 0)
         cv2.line(water_level_image, (0, y), (water_level_image.shape[1], y), line_color, 2)
         cv2.putText(water_level_image, f"{water_level:.2f}m",
                     (water_level_image.shape[1]-200, max(15, y-5)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 2)
     return water_level_image
+
+def require_calibration(station):
+    if len(station.cal_points) < 2:
+        abort(409, description=f"Station '{station.id}' has not been calibrated yet.")
+
 
 def resolve_station(station_id):
     """A station from the URL. Unknown ids are a 404 rather than a silent fallback,
@@ -1149,25 +1224,26 @@ def get_stations():
 def get_status(station_id=None):
     """Endpoint to get the water level and return image URLs."""
     station = resolve_station(station_id)
-    video_segments = get_video_segments(station)
-    if not video_segments:
-        return jsonify({"error": "Failed to retrieve video segments from HLS playlist."}), 500
+    require_calibration(station)
 
-    original_frame = None
-    used_video_url = None
+    if station.is_snapshot:
+        original_frame = fetch_snapshot(station)
+    else:
+        video_segments = get_video_segments(station)
+        if not video_segments:
+            return jsonify({"error": "Failed to retrieve video segments from HLS playlist."}), 500
 
-    for video_url in reversed(video_segments):  # Try most recent first
-        print(f"Trying video URL: {video_url}")
-        original_frame = capture_last_frame_from_video(video_url)
-        if original_frame is not None:
-            used_video_url = video_url
-            print(f"Successfully captured frame from: {video_url}")
-            break
-        else:
+        original_frame = None
+        for video_url in reversed(video_segments):  # Try most recent first
+            print(f"Trying video URL: {video_url}")
+            original_frame = capture_last_frame_from_video(video_url)
+            if original_frame is not None:
+                print(f"Successfully captured frame from: {video_url}")
+                break
             print(f"Failed to capture frame from: {video_url}")
 
     if original_frame is None:
-        return jsonify({"error": "Failed to capture frame from any video segment."}), 500
+        return jsonify({"error": "Failed to capture a frame"}), 500
 
     # Align frame to handle camera movement
     with station.lock:
@@ -1207,7 +1283,7 @@ def get_status(station_id=None):
 
     processed_image_url = store_frame(station, processed_frame, "water_level_image", "_processed")
     original_image_url = store_frame(station, aligned_frame, "water_level_image", "_original")
-    water_level_line_image = generate_water_level_line_image(aligned_frame, y_lowest_yellow, water_level)
+    water_level_line_image = generate_water_level_line_image(station, aligned_frame, y_lowest_yellow, water_level)
     water_level_line_image_url = store_frame(station, water_level_line_image, "water_level_image", "_level_lines")
 
     # Clean up old captures to maintain MAX_KEEP limit
@@ -1230,11 +1306,7 @@ def debug_detection(station_id=None):
     """Debug endpoint to visualize color + edge fusion detection."""
     station = resolve_station(station_id)
     try:
-        video_url = get_video_url(station)
-        if not video_url:
-            return jsonify({"error": "Failed to get video URL"}), 500
-        
-        original_frame = capture_last_frame_from_video(video_url)
+        original_frame = capture_station_frame(station)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
@@ -1270,12 +1342,9 @@ def debug_detection(station_id=None):
 def debug_water_level(station_id=None):
     """Specialized debug endpoint for water level detection only."""
     station = resolve_station(station_id)
+    require_calibration(station)
     try:
-        video_url = get_video_url(station)
-        if not video_url:
-            return jsonify({"error": "Failed to get video URL"}), 500
-        
-        original_frame = capture_last_frame_from_video(video_url)
+        original_frame = capture_station_frame(station)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             
@@ -1383,11 +1452,7 @@ def get_calibration_frame(station_id=None):
     """Fetch the latest video frame, set it as homography reference, and return its URL."""
     station = resolve_station(station_id)
     try:
-        video_url = get_video_url(station)
-        if not video_url:
-            return jsonify({"error": "Failed to get video URL"}), 500
-            
-        original_frame = capture_last_frame_from_video(video_url)
+        original_frame = capture_station_frame(station)
         if original_frame is None:
             return jsonify({"error": "Failed to capture frame"}), 500
             

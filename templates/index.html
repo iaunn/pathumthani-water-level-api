@@ -352,6 +352,8 @@
         width: 100%;
         max-width: 480px;
         margin: 0 auto;
+        /* a starting shape only; each camera's own ratio is applied once its
+           first frame loads, since the stations are not all 4:3 */
         aspect-ratio: 4 / 3;
         border-radius: var(--r-md);
         overflow: hidden;
@@ -814,7 +816,9 @@
 
     <div class="foot">
         <span data-i18n="footNote">Levels are derived from the live gauge camera by computer vision.</span>
-        <span><a href="/status" target="_blank" rel="noopener" data-i18n="apiStatus">API status</a></span>
+        <span>
+            <a href="/status" target="_blank" rel="noopener" data-i18n="apiStatus">API status</a><span id="sourceLink"></span>
+        </span>
     </div>
 </main>
 
@@ -916,6 +920,7 @@
             deltaSteady: " over the last 5 minutes",
             showMarkers: "Flood markers",
             backToLatest: "Back to latest",
+            feedSource: "Camera source",
             noImageTitle: "No image kept",
             noImageBody: "Frames are rotated out long before the readings are.",
             noCaptureNear: "No capture was taken near that point.",
@@ -984,6 +989,7 @@
             deltaSteady: " \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             showMarkers: "\u0e40\u0e2a\u0e49\u0e19\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33",
             backToLatest: "\u0e01\u0e25\u0e31\u0e1a\u0e44\u0e1b\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
+            feedSource: "\u0e41\u0e2b\u0e25\u0e48\u0e07\u0e17\u0e35\u0e48\u0e21\u0e32\u0e02\u0e2d\u0e07\u0e01\u0e25\u0e49\u0e2d\u0e07",
             noImageTitle: "\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e40\u0e01\u0e47\u0e1a\u0e20\u0e32\u0e1e\u0e44\u0e27\u0e49",
             noImageBody: "\u0e20\u0e32\u0e1e\u0e16\u0e39\u0e01\u0e25\u0e1a\u0e2d\u0e2d\u0e01\u0e01\u0e48\u0e2d\u0e19\u0e04\u0e48\u0e32\u0e17\u0e35\u0e48\u0e27\u0e31\u0e14\u0e44\u0e14\u0e49\u0e21\u0e32\u0e01",
             noCaptureNear: "\u0e44\u0e21\u0e48\u0e21\u0e35\u0e20\u0e32\u0e1e\u0e17\u0e35\u0e48\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e43\u0e01\u0e25\u0e49\u0e08\u0e38\u0e14\u0e19\u0e31\u0e49\u0e19",
@@ -1050,6 +1056,7 @@
             b.setAttribute("aria-pressed", String(b.getAttribute("data-lang") === lang));
         });
 
+        renderSource();
         if (state.chart) state.chart.options.scales.y.title.text = t("levelAxis");
         if (state.loaded) render();
         refreshAgo();
@@ -1236,6 +1243,23 @@
         renderStations();
     }
 
+    function renderSource() {
+        var holder = $("sourceLink");
+        holder.textContent = "";
+
+        var current = null;
+        state.stations.forEach(function (st) { if (st.id === STATION) current = st; });
+        if (!current || !current.source) return;
+
+        holder.appendChild(document.createTextNode(" \u00b7 "));
+        var a = document.createElement("a");
+        a.href = current.source;             // from the committed station config
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = t("feedSource");
+        holder.appendChild(a);
+    }
+
     function renderStations() {
         var current = null;
         state.stations.forEach(function (st) { if (st.id === STATION) current = st; });
@@ -1253,6 +1277,7 @@
                 nav.appendChild(a);
             });
         });
+        renderSource();
     }
 
     function stationName(st) {
@@ -1378,12 +1403,30 @@
     function placeWaterline(shot) {
         var line = $("waterline");
         var img = $("frameImg");
+        var box = img.parentElement;
+
         // older records predate the stored pixel, so they simply get no line
         if (!shot || typeof shot.y !== "number" || !img.naturalHeight) {
             line.classList.remove("is-shown");
             return;
         }
-        line.style.top = (shot.y / img.naturalHeight) * 100 + "%";
+
+        // Give the box the picture's own shape. The cameras are not all 4:3 --
+        // one is 1920x1080 -- and a fixed box letterboxes the picture inside it.
+        box.style.aspectRatio = img.naturalWidth + " / " + img.naturalHeight;
+
+        // Then measure what was actually drawn rather than assuming it fills the
+        // box: object-fit still letterboxes if the two ever disagree, and the
+        // line has to sit on the picture, not on the padding around it.
+        var scale = Math.min(box.clientWidth / img.naturalWidth,
+                             box.clientHeight / img.naturalHeight);
+        var offsetX = (box.clientWidth - img.naturalWidth * scale) / 2;
+        var offsetY = (box.clientHeight - img.naturalHeight * scale) / 2;
+
+        line.style.top = (offsetY + shot.y * scale) + "px";
+        line.style.left = offsetX + "px";
+        line.style.right = offsetX + "px";
+
         $("waterlineTag").textContent = shot.level.toFixed(2) + " " + t("unit");
         line.classList.add("is-shown");
     }
@@ -1844,6 +1887,12 @@
     }
 
     $("camBack").addEventListener("click", showLatest);
+
+    var replaceTimer;
+    window.addEventListener("resize", function () {
+        clearTimeout(replaceTimer);
+        replaceTimer = setTimeout(function () { placeWaterline(shownShot()); }, 120);
+    });
 
     $("markerToggle").checked = state.showMarkers;
     $("markerToggle").addEventListener("change", function () {
