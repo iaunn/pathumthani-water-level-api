@@ -11,7 +11,9 @@ import warnings
 import json
 import threading
 import time
-from flask import Flask, jsonify, request, render_template, abort
+from flask import Flask, jsonify, request, render_template, abort, Response
+from functools import wraps
+import hmac
 from datetime import datetime
 from flask_caching import Cache
 
@@ -35,6 +37,58 @@ CACHE_TTL = int(os.getenv('CACHE_TTL', 300))
 
 # Maximum number of captures to keep (older ones are deleted automatically)
 MAX_KEEP = int(os.getenv("MAX_KEEP_IMAGES", 200))
+
+# --- calibration password ---------------------------------------------------
+# Everything that changes what the app measures sits behind this: the
+# calibration page and the three endpoints that save to MongoDB, plus the frame
+# grab, which replaces the homography baseline that every later reading is
+# aligned to. Gating only the page would be theatre while the POSTs behind it
+# stay open to anyone who reads the JavaScript.
+#
+# HTTP Basic, deliberately: it covers the page and the fetches it makes with one
+# mechanism, the browser attaches it to both, and it holds no server-side
+# session, so it behaves the same across replicas. The password crosses the wire
+# base64-encoded, not encrypted -- serve this over HTTPS.
+CALIBRATE_USER = os.getenv("CALIBRATE_USER", "admin")
+CALIBRATE_PASSWORD = os.getenv("CALIBRATE_PASSWORD")
+
+
+def _password_matches(auth):
+    if not auth or (auth.type or "").lower() != "basic":
+        return False
+    # Both compared before either is used, so a wrong username cannot be told
+    # from a wrong password by how long the answer took.
+    user_ok = hmac.compare_digest(auth.username or "", CALIBRATE_USER)
+    pass_ok = hmac.compare_digest(auth.password or "", CALIBRATE_PASSWORD)
+    return user_ok and pass_ok
+
+
+def protected(*methods):
+    """Ask for the password before running this view.
+
+    With no arguments the whole route is gated; naming methods gates only those,
+    which is how one view serves a public GET and a protected POST.
+
+    An unset password locks the route rather than opening it. A deploy that
+    forgets the variable then loses its calibration page, which is recoverable,
+    instead of publishing an open one, which is not.
+    """
+    def decorate(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if methods and request.method not in methods:
+                return view(*args, **kwargs)
+            if not CALIBRATE_PASSWORD:
+                return jsonify({"error": "Calibration is disabled: set "
+                                         "CALIBRATE_PASSWORD in the environment."}), 503
+            if not _password_matches(request.authorization):
+                return Response(
+                    "Calibration needs the password.\n", 401,
+                    {"WWW-Authenticate": 'Basic realm="Calibration", charset="UTF-8"'})
+            return view(*args, **kwargs)
+        return wrapper
+    return decorate
+
 
 storage.init()
 database.init()
@@ -1607,6 +1661,7 @@ def get_status(station_id=None):
 
 @app.route('/debug', methods=['GET'])
 @app.route('/debug/<station_id>', methods=['GET'])
+@protected()
 def debug_detection(station_id=None):
     """Debug endpoint to visualize color + edge fusion detection."""
     station = resolve_station(station_id)
@@ -1648,6 +1703,7 @@ def debug_detection(station_id=None):
 
 @app.route('/debug-water', methods=['GET'])
 @app.route('/debug-water/<station_id>', methods=['GET'])
+@protected()
 def debug_water_level(station_id=None):
     """Specialized debug endpoint for water level detection only."""
     station = resolve_station(station_id)
@@ -1695,12 +1751,14 @@ def debug_water_level(station_id=None):
 
 @app.route('/calibrate', methods=['GET'])
 @app.route('/calibrate/<station_id>', methods=['GET'])
+@protected()
 def calibrate_ui(station_id=None):
     """Serve the calibration UI page."""
     return render_template('calibrate.html', station_id=resolve_station(station_id).id)
 
 @app.route('/api/calibration', methods=['GET', 'POST'])
 @app.route('/api/<station_id>/calibration', methods=['GET', 'POST'])
+@protected('POST')
 def handle_calibration(station_id=None):
     """Get or update calibration points."""
     station = resolve_station(station_id)
@@ -1726,6 +1784,7 @@ def handle_calibration(station_id=None):
 
 @app.route('/api/markers', methods=['GET', 'POST'])
 @app.route('/api/<station_id>/markers', methods=['GET', 'POST'])
+@protected('POST')
 def handle_markers(station_id=None):
     """Reference lines drawn across the trend chart: warning levels and past floods."""
     station = resolve_station(station_id)
@@ -1766,6 +1825,7 @@ def handle_markers(station_id=None):
 
 @app.route('/api/roi', methods=['GET', 'POST'])
 @app.route('/api/<station_id>/roi', methods=['GET', 'POST'])
+@protected('POST')
 def handle_roi(station_id=None):
     """The rectangle the detector looks at: read it, move it, or hand it back to
     stations.json. Saved to MongoDB so no commit is needed to aim a camera."""
@@ -1817,6 +1877,7 @@ def handle_roi(station_id=None):
 
 @app.route('/api/calibration/frame', methods=['GET'])
 @app.route('/api/<station_id>/calibration/frame', methods=['GET'])
+@protected()
 def get_calibration_frame(station_id=None):
     """Fetch the latest video frame, set it as homography reference, and return its URL."""
     station = resolve_station(station_id)
@@ -1912,6 +1973,13 @@ for _station in stations.all_stations():
         load_roi(_station)
     except Exception as e:
         print(f"[{_station.id}] saved detection region could not be applied: {e}")
+
+if CALIBRATE_PASSWORD:
+    print(f"Calibration locked behind the password (user {CALIBRATE_USER}).")
+else:
+    print("CALIBRATE_PASSWORD is not set: the calibration page, the saves behind "
+          "it and the debug endpoints will answer 503. The dashboard and the "
+          "trackers are unaffected.")
 
 # Started here, not next to background_tracker: the threads run immediately and
 # would race the rest of this module, calling helpers that are not defined yet.
