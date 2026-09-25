@@ -71,6 +71,37 @@ def latest_readings(station_id, limit):
     return sorted(docs, key=lambda d: d["timestamp"])
 
 
+def readings_in_range(station_id, start_ts, end_ts, limit=0):
+    """Every raw reading in a window, oldest first, with the frame it was read from."""
+    cursor = _readings.find(
+        {"station": station_id,
+         "timestamp": {"$gte": int(start_ts), "$lte": int(end_ts)}},
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1}
+    ).sort("timestamp", ASCENDING)
+    if limit:
+        cursor = cursor.limit(limit)
+    return list(cursor)
+
+
+def update_reading(station_id, timestamp, level, y, mode=None):
+    """Rewrite what one capture was read as. Returns True if a document changed."""
+    update = {"$set": {"level": round(float(level), 2), "y": int(y),
+                       "recomputed_at": datetime.now(timezone.utc)}}
+    if mode:
+        update["$set"]["mode"] = mode
+    else:
+        update["$unset"] = {"mode": ""}
+    result = _readings.update_one(
+        {"station": station_id, "timestamp": int(timestamp)}, update)
+    return result.modified_count > 0
+
+
+def delete_reading(station_id, timestamp):
+    """Drop one reading, for a capture the detector no longer stands behind."""
+    return _readings.delete_one(
+        {"station": station_id, "timestamp": int(timestamp)}).deleted_count > 0
+
+
 def reading_near(station_id, timestamp, window):
     """
     The capture closest to `timestamp`, within `window` seconds either side.

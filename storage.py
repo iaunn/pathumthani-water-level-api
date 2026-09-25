@@ -54,6 +54,19 @@ def public_url(key):
     return f"{_public_base}/{key}"
 
 
+def key_for_url(url):
+    """The object key behind a stored public URL, or None if it is not ours.
+
+    Readings keep the URL a browser fetches, not the key. Reading an old frame
+    back means turning one into the other, and a URL from before the public base
+    moved will not convert -- better to say so than to guess at a key.
+    """
+    if not url:
+        return None
+    prefix = _public_base + "/"
+    return url[len(prefix):] if url.startswith(prefix) else None
+
+
 def upload_frame(frame, key):
     """Encode a BGR frame as JPEG and store it. Returns the public URL."""
     ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), _jpeg_quality])
