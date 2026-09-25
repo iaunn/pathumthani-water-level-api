@@ -790,6 +790,13 @@ def _smooth(values, window=5):
     return np.convolve(values, np.ones(window) / window, mode="same")
 
 
+def _reading_mask(image, left, right):
+    """Yellow paint at the threshold the staff is found by: saturated past the
+    murk and out of the dark, but with no bar on how brightly it is lit."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    return cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))[:, left:right + 1]
+
+
 def _yellow_column(image, x_start, x_end, y_start=0, y_end=None):
     """Locate the staff by its yellow paint, and say which of its rows are lit."""
     ys, ye = _roi_rows(image, y_start, y_end)
@@ -910,7 +917,7 @@ def _gauge_mask(image, left, right):
 
 
 def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
-               min_above=20, max_below=80):
+               min_above=20, max_below=80, soft=None):
     """Whether the staff's colour stops at `waterline` instead of carrying on.
 
     The reflection never passes the mask (S p50 84-85 against the staff's 226)
@@ -918,12 +925,32 @@ def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
     is yellow and below it there is none. A dip mid-staff has yellow continuing
     underneath it, which is what tells a graduation band from the waterline.
     False means the caller should keep walking rather than settle.
+
+    `soft` is the reading mask, and it is consulted only when the bright mask
+    has nothing to say at all -- fewer than `min_above` pixels above the line,
+    which means the check cannot be run rather than that it failed. Flat light
+    does that: on the Pathumthani frame of 25 Sep 08:53 the scan put the surface
+    at y352, where a person reads 1.55m, and the bright mask held one pixel
+    above it, so the reading was vetoed and the station went silent with the
+    staff in plain view. The reading mask held 185 above and 1 below -- the
+    same answer the bright mask gives in good light.
+
+    It is a fallback and not a replacement. Wherever the bright mask is working
+    it is the stricter of the two, and at Rangsit it is what keeps the
+    reflection out: even on a night frame it carried 169-174 pixels above the
+    line, far past this floor, so that station never reaches the soft path.
     """
-    above = int((mask[max(top, waterline - lookback):waterline + 1] > 0).sum())
-    if above < min_above:
-        return False          # not standing on the gauge at all
-    under = int((mask[waterline + 1:min(end, waterline + 1 + lookahead)] > 0).sum())
-    return under <= max_below
+    def ends(m):
+        above = int((m[max(top, waterline - lookback):waterline + 1] > 0).sum())
+        if above < min_above:
+            return None       # this mask cannot answer
+        under = int((m[waterline + 1:min(end, waterline + 1 + lookahead)] > 0).sum())
+        return under <= max_below
+
+    verdict = ends(mask)
+    if verdict is None and soft is not None:
+        verdict = ends(soft)
+    return bool(verdict)
 
 
 def _mask_bottom(mask, top, end, coverage=0.15, sustain=4, window=12):
@@ -1049,9 +1076,12 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
         # "blind" found no yellow and is measuring texture alone.
         meta["mode"] = "gauge" if yellow else "blind"
 
-    # The staff's own bright yellow, for checking where the reading lands.
-    # Skipped for a colourless column: there is nothing to check it with.
+    # The staff's own bright yellow, for checking where the reading lands, and
+    # the looser reading mask behind it for when the light is too flat for the
+    # bright one to mean anything. Both skipped for a colourless column: there
+    # is nothing to check it with.
     mask = _gauge_mask(image, left, right) if yellow else None
+    soft = _reading_mask(image, left, right) if yellow else None
 
     strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
     contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
@@ -1094,7 +1124,7 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
             below += 1
             # A few dim rows are just a wide black band; a sustained run is water.
             if waterline is not None and below >= sustain_rows:
-                if mask is None or _mask_ends(mask, waterline, top, ye):
+                if mask is None or _mask_ends(mask, waterline, top, ye, soft=soft):
                     collapsed = True
                     break
                 # Gauge-yellow is still there under this dip: the staff carries
