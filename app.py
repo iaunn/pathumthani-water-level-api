@@ -827,18 +827,27 @@ def _smooth(values, window=5):
     return np.convolve(values, np.ones(window) / window, mode="same")
 
 
-def _reading_mask(image, left, right):
+def _reading_mask(image, left=None, right=None):
     """Yellow paint at the threshold the staff is found by: saturated past the
-    murk and out of the dark, but with no bar on how brightly it is lit."""
+    murk and out of the dark, but with no bar on how brightly it is lit.
+
+    The hue window matches the one _gauge_mask uses. It used to be narrower,
+    20-30, and these staffs are more orange than that in flat light: down the
+    wet lower half of the Pathumthani staff the paint reads H p50 17-18, so the
+    mask found 14 pixels in the forty rows above a waterline it had located
+    correctly -- too few for the check to run, and the reading was refused with
+    the staff plainly visible. At 18-32 the same rows give 138, and the water
+    below still gives none.
+    """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    return cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))[:, left:right + 1]
+    mask = cv2.inRange(hsv, np.array([18, 140, 120]), np.array([32, 255, 255]))
+    return mask if left is None else mask[:, left:right + 1]
 
 
 def _yellow_column(image, x_start, x_end, y_start=0, y_end=None):
     """Locate the staff by its yellow paint, and say which of its rows are lit."""
     ys, ye = _roi_rows(image, y_start, y_end)
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, np.array([20, 140, 120]), np.array([30, 255, 255]))
+    mask = _reading_mask(image)
     mask[:, :x_start] = 0
     mask[:, x_end:] = 0
     mask[:ys] = 0
