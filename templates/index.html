@@ -702,6 +702,15 @@
         gap: 12px;
         flex-wrap: wrap;
     }
+    /* A line of its own rather than a third item in the row: with
+       space-between, three children put the copyright in the middle, which is
+       not where anyone looks for it. */
+    .foot-legal {
+        flex-basis: 100%;
+        padding-top: 12px;
+        border-top: 1px solid var(--hairline);
+        color: var(--ink-muted);
+    }
     .foot a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid var(--hairline-strong); }
     .foot a:hover { color: var(--ink); }
 
@@ -890,6 +899,9 @@
         <span>
             <a href="/status" target="_blank" rel="noopener" data-i18n="apiStatus">API status</a><span id="sourceLink"></span>
         </span>
+        <span class="foot-legal">© <span id="footYear">2026</span>
+            <a href="https://iaunn.com" target="_blank" rel="noopener">iaunn.com</a>.
+            <span data-i18n="rightsReserved">All rights reserved</span></span>
     </div>
 </main>
 
@@ -984,6 +996,7 @@
             hourAgo: "1 hour ago",
             hoursAgo: "{n} hours ago",
             latest: "Latest",
+            rightsReserved: "All rights reserved.",
             heldTag: "not measured",
             heldNote: "Held from the last reading \u00b7 the camera view could not be read",
             rising: "Rising",
@@ -1055,6 +1068,7 @@
             hourAgo: "1 \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e17\u0e35\u0e48\u0e41\u0e25\u0e49\u0e27",
             hoursAgo: "{n} \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e17\u0e35\u0e48\u0e41\u0e25\u0e49\u0e27",
             latest: "\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
+            rightsReserved: "\u0e2a\u0e07\u0e27\u0e19\u0e25\u0e34\u0e02\u0e2a\u0e34\u0e17\u0e18\u0e34\u0e4c",
             heldTag: "\u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e27\u0e31\u0e14",
             heldNote: "\u0e04\u0e07\u0e04\u0e48\u0e32\u0e40\u0e14\u0e34\u0e21\u0e44\u0e27\u0e49 \u00b7 \u0e2d\u0e48\u0e32\u0e19\u0e20\u0e32\u0e1e\u0e08\u0e32\u0e01\u0e01\u0e25\u0e49\u0e2d\u0e07\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08",
             rising: "\u0e40\u0e1e\u0e34\u0e48\u0e21\u0e02\u0e36\u0e49\u0e19",
@@ -2063,6 +2077,10 @@
         state.stations = (data && data.stations) || [];
         renderStations();
     }).catch(function (e) { console.error(e); });
+
+    // The markup carries a year so the footer is right with JavaScript off;
+    // this keeps it right in January without anyone remembering to edit it.
+    $("footYear").textContent = new Date().getFullYear();
 
     applyLang();
     load();
