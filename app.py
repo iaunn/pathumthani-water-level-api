@@ -963,7 +963,8 @@ def _gauge_mask(image, left, right):
 
 
 def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
-               min_above=20, max_below=80, soft=None):
+               min_above=20, max_below=80, clean_above_frac=0.25,
+               clean_below_frac=0.05, soft=None):
     """Whether the staff's colour stops at `waterline` instead of carrying on.
 
     The reflection never passes the mask (S p50 84-85 against the staff's 226)
@@ -981,21 +982,49 @@ def _mask_ends(mask, waterline, top, end, lookback=40, lookahead=40,
     staff in plain view. The reading mask held 185 above and 1 below -- the
     same answer the bright mask gives in good light.
 
-    It is a fallback and not a replacement. Wherever the bright mask is working
-    it is the stricter of the two, and at Rangsit it is what keeps the
-    reflection out: even on a night frame it carried 169-174 pixels above the
-    line, far past this floor, so that station never reaches the soft path.
-    """
-    def ends(m):
-        above = int((m[max(top, waterline - lookback):waterline + 1] > 0).sum())
-        if above < min_above:
-            return None       # this mask cannot answer
-        under = int((m[waterline + 1:min(end, waterline + 1 + lookahead)] > 0).sum())
-        return under <= max_below
+    The soft mask also gets a say when the bright one says no, but only an
+    unambiguous one. Under floodlights the water itself creeps into the bright
+    mask -- the night river at Pathumthani reads S p50 75 and V p50 199 against
+    a cut of 70 and 200 -- so on the 19:18 frame it found 289 pixels below a
+    waterline that was exactly right, and vetoed it. The reading mask found
+    none at all there. A bright-mask no is evidence, so it is only overturned
+    by a soft answer with nothing under the line, not merely less than the
+    usual allowance.
 
-    verdict = ends(mask)
-    if verdict is None and soft is not None:
-        verdict = ends(soft)
+    Wherever the bright mask is working it stays the stricter of the two, and
+    at Rangsit it is what keeps the reflection out: the sunlit reflection
+    carries into the reading mask, 224-379 pixels below the surface, so no
+    clean soft answer is available there and the bright mask still decides.
+    """
+    def ends(m, allowance, floor):
+        above = int((m[max(top, waterline - lookback):waterline + 1] > 0).sum())
+        if above < floor:
+            return None       # this mask cannot answer here
+        under = int((m[waterline + 1:min(end, waterline + 1 + lookahead)] > 0).sum())
+        return under <= allowance
+
+    verdict = ends(mask, max_below, min_above)
+    if soft is not None and verdict is not True:
+        if verdict is None:
+            # The bright mask had nothing to say, so the reading mask answers
+            # on the same terms.
+            soft_verdict = ends(soft, max_below, min_above)
+        else:
+            # Overturning a bright-mask no takes more than the usual
+            # allowance. The staff has to be solidly there above the line --
+            # a quarter of the column, where the Pathumthani night frames give
+            # 0.70-0.71 -- and no more than a trace under it, which at dusk is
+            # the staff's own faint reflection at 0.00-0.03. Deep in Rangsit's
+            # reflection the reading mask is as empty above as below, 0.02,
+            # and it is that missing support above, not the clear water below,
+            # that stops a mirror from buying its way past here.
+            above_span = (min(waterline, end - 1) - max(top, waterline - lookback) + 1)
+            below_span = max(0, min(end, waterline + 1 + lookahead) - waterline - 1)
+            solid = int(above_span * soft.shape[1] * clean_above_frac)
+            trace = int(below_span * soft.shape[1] * clean_below_frac)
+            soft_verdict = ends(soft, trace, max(min_above, solid))
+        if soft_verdict is not None:
+            verdict = soft_verdict
     return bool(verdict)
 
 
