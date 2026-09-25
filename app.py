@@ -177,7 +177,8 @@ def background_tracker(station):
                         aligned_frame, station.x_start, station.x_end,
                         y_start=station.y_start, y_end=station.y_end,
                         frames=aligned_segment, meta=meta,
-                        staff_paint=station.staff_paint)
+                        staff_paint=station.staff_paint,
+                        still_water=station.still_water)
                     # Nothing behind it. The gauge detector refusing -- the
                     # colour check failed, or the region holds no staff -- is
                     # the honest answer, and the cascade that used to run here
@@ -978,7 +979,8 @@ def _bands_readable(image, left, right, top, waterline, span=40, gap=5, floor=15
 
 def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=None,
                                 frames=None, texture_drop=0.5, sustain_rows=9,
-                                motion_ratio=3.0, meta=None, staff_paint=None):
+                                motion_ratio=3.0, meta=None, staff_paint=None,
+                                still_water=False):
     """
     Find the waterline by where the gauge staff stops looking like a gauge staff.
 
@@ -1062,14 +1064,26 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     waterline = None
     below = 0
     collapsed = False
-    # Where the paint gives out. The contrast scan is allowed a little way past
-    # it, because submerged paint silts over and the colour can stop high -- the
-    # 10-15cm that first motivated the texture scan is 22px at Pathumthani -- but
-    # not far enough to reach a reflection: at Rangsit the scan's first candidate
-    # row sat 137px below the paint. Taken as a fraction of the staff's own
-    # length those are 0.06 and 0.47, so the budget comes from that rather than
-    # from a pixel count, which would mean different things at 480 and 1080 lines.
-    bottom = _mask_bottom(mask, top, ye) if mask is not None else None
+    # Where the paint gives out, for a station whose water mirrors the staff.
+    #
+    # Only for those. The mask reads the paint against fixed thresholds, and a
+    # fixed threshold is a statement about the light: on a flat, hazy dawn at
+    # Pathumthani the staff's own brightness fell to V p50 165 against the
+    # mask's floor of 200, so the mask broke up two-thirds of the way up a staff
+    # that was in plain view, and the edge landed 246px above the water -- 1.5m
+    # too high, reported as a rising river. Relaxing the floor is not the answer
+    # either: it lets Rangsit's reflection straight through, 250px past the
+    # surface. The paint edge is worth having where texture cannot work at all,
+    # and worth nothing where it can.
+    #
+    # The scan is allowed a little way past the edge, because submerged paint
+    # silts over and the colour can stop high -- the 10-15cm that first
+    # motivated the texture scan is 22px at Pathumthani -- but not far enough to
+    # reach a reflection: at Rangsit the scan's first candidate row sat 137px
+    # below the paint. As a fraction of the staff's own length those are 0.06
+    # and 0.47, so the budget comes from that rather than from a pixel count,
+    # which would mean different things at 480 and 1080 lines.
+    bottom = _mask_bottom(mask, top, ye) if (still_water and mask is not None) else None
     limit = ye if bottom is None else min(ye, bottom + int((bottom - top) * 0.15) + 1)
 
     for y in range(top, min(len(contrast), limit)):
@@ -1088,14 +1102,15 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
                 # the surface. Walk past it.
                 below = 0
 
-    # The scan finding no collapse is not the same as there being no waterline.
-    # On still water there is nothing for it to find: the reflection's contrast
-    # measured 102-128 against the staff's 127 right across the surface. The
-    # paint stopping is itself the observation -- it is the row where the staff
-    # enters the water -- and it held to within 3px across 19 Rangsit frames
-    # while the scan was reporting a spread of 276px, 0.8m of river that never
-    # moved. Without a painted column there is nothing to fall back on, and a
-    # dark frame or a gauge out of shot still reports nothing.
+    # On still water the scan finding no collapse is not the same as there being
+    # no waterline: the reflection's contrast measured 102-128 against the
+    # staff's 127 right across the surface, so there was never anything for it
+    # to find. The paint stopping is the observation instead, and it held to
+    # within 3px across 19 Rangsit frames while the scan was reporting a spread
+    # of 276px, 0.8m of river that never moved.
+    #
+    # Everywhere else, and wherever there is no painted column, no collapse
+    # means no reading -- a dark frame, a flat one, or a gauge out of shot.
     if not collapsed:
         return bottom
 
@@ -1292,13 +1307,13 @@ def visualize_detection_debug(image, x_start=225, x_end=390, y_start=0, y_end=No
     return debug_image
 
 def visualize_water_level_debug(image, x_start=225, x_end=390, y_start=0, y_end=None,
-                                staff_paint=None):
+                                staff_paint=None, still_water=False):
     """Create detailed visualization of water level detection process."""
     ys, ye = _roi_rows(image, y_start, y_end)
 
     # Run water level detection
     detected_y = detect_water_level_on_gauge(image, x_start, x_end, y_start=ys, y_end=ye,
-                                             staff_paint=staff_paint)
+                                             staff_paint=staff_paint, still_water=still_water)
     
     # Create visualization image
     debug_img = image.copy()
@@ -1600,7 +1615,7 @@ def get_status(station_id=None):
         raw_detection = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
             y_start=station.y_start, y_end=station.y_end, meta=meta,
-            staff_paint=station.staff_paint)
+            staff_paint=station.staff_paint, still_water=station.still_water)
         # The same detector the tracker uses: "gauge" (colour + texture) or
         # "blind" (texture only), and nothing when it declines to answer. The
         # cascade that used to sit behind this endpoint guessed -- 885 px with
@@ -1720,14 +1735,15 @@ def debug_water_level(station_id=None):
         detected_y = detect_water_level_on_gauge(
             aligned_frame, station.x_start, station.x_end,
             y_start=station.y_start, y_end=station.y_end, meta=meta,
-            staff_paint=station.staff_paint)
+            staff_paint=station.staff_paint, still_water=station.still_water)
         station.detection_mode = (meta.get("mode") if detected_y is not None
                                   else "none")
         
         # Create water level debug visualization
         debug_image = visualize_water_level_debug(
             aligned_frame, station.x_start, station.x_end,
-            station.y_start, station.y_end, staff_paint=station.staff_paint)
+            station.y_start, station.y_end, staff_paint=station.staff_paint,
+            still_water=station.still_water)
         
         # Save debug image
         water_level_debug_url = store_frame(station, debug_image, "water_level_debug")

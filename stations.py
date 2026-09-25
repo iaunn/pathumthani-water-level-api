@@ -61,6 +61,19 @@ class Station:
                 f"Station '{self.id}' has staff_paint '{self.staff_paint}'; "
                 f"use 'yellow', 'none', or leave it out.")
 
+        # Whether this river is still enough to mirror the staff. Where it is,
+        # the reflection carries the graduation bands down with it and texture
+        # has nothing to find, so the reading comes from where the paint stops.
+        # Where it is not, that edge is a liability: the paint mask is read
+        # against fixed thresholds, and on a flat dawn at Pathumthani it broke
+        # up two-thirds of the way up a staff in plain view and put the reading
+        # 1.5m high. Off unless a site is known to mirror.
+        self.still_water = bool(cfg.get("still_water", False))
+        if self.still_water and self.staff_paint != "yellow":
+            raise RuntimeError(
+                f"Station '{self.id}' sets still_water but its staff_paint is "
+                f"'{self.staff_paint}'; the paint edge is what still_water reads.")
+
         # All four edges, in frame pixels: x runs left to right, y top to bottom.
         # stations.json usually carries only the columns, so the rows default to
         # the whole frame.
@@ -174,6 +187,7 @@ class Station:
             "source": self.source,
             "roi": self.roi,
             "staff_paint": self.staff_paint,
+            "still_water": self.still_water,
             "detection_mode": self.detection_mode,
         }
 
