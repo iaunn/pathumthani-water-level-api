@@ -363,6 +363,47 @@
     .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
     .frame img:not([src]) { visibility: hidden; }
 
+    /* Swapping to another capture holds the picture that is already there at
+       reduced opacity rather than blanking it: the frame keeps its shape, and a
+       reader who clicked a chart point can still see what they are leaving. The
+       waterline and the caption stay with it, because they describe that
+       picture and are still true of what is on screen. */
+    .frame.is-busy img { opacity: .32; }
+    .frame img { transition: opacity 140ms ease; }
+
+    .frame-busy {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+    }
+    .frame.is-busy .frame-busy { display: flex; }
+    /* On its own surface, not straight onto the frame: these cameras point at
+       everything from bright haze to a night river, and a bare ring is lost
+       against half of them. */
+    .frame-busy span {
+        width: 44px; height: 44px;
+        border-radius: 50%;
+        background: var(--surface);
+        box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+        position: relative;
+    }
+    .frame-busy span::after {
+        content: "";
+        position: absolute; inset: 9px;
+        border-radius: 50%;
+        border: 2px solid var(--hairline-strong);
+        border-top-color: var(--series);
+        animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* With motion off the ring cannot turn, so it settles into a quiet marker
+       and the dimmed picture behind it is what says "working". */
+    @media (prefers-reduced-motion: reduce) {
+        .frame-busy span::after { border-top-color: var(--hairline-strong); }
+    }
+
     .plot canvas { cursor: pointer; }
 
     .frame-missing {
@@ -724,13 +765,14 @@
                     <span id="camCaption"></span>
                 </span>
             </div>
-            <div class="frame">
+            <div class="frame" id="frame">
                 <div class="skeleton" id="skeleton"></div>
                 <img id="frameImg" data-i18n-alt="camAlt" alt="Camera view of the river gauge">
                 <div class="frame-missing" id="frameMissing">
                     <strong data-i18n="noImageTitle">No image kept</strong>
                     <span data-i18n="noImageBody">Frames are rotated out long before the readings are.</span>
                 </div>
+                <div class="frame-busy" id="frameBusy" aria-hidden="true"><span></span></div>
                 <div class="waterline" id="waterline">
                     <div class="waterline-rule"></div>
                     <div class="waterline-tag" id="waterlineTag"></div>
@@ -1353,38 +1395,81 @@
         return state.recent[state.recent.length - 1] || null;
     }
 
+    // A swap is two waits -- asking the server which capture is nearest, then
+    // the picture itself decoding -- and neither used to show. The caption
+    // changed at once while the old picture stayed put, so the frame read as
+    // stale rather than busy. One flag covers both waits.
+    //
+    // It is raised on a delay: a cached frame comes back in a few milliseconds
+    // and a spinner that appears and vanishes inside one is worse than none.
+    var busyTimer = null;
+
+    function setBusy(on) {
+        clearTimeout(busyTimer);
+        if (!on) {
+            $("frame").classList.remove("is-busy");
+            $("frame").removeAttribute("aria-busy");
+            return;
+        }
+        $("frame").setAttribute("aria-busy", "true");
+        busyTimer = setTimeout(function () { $("frame").classList.add("is-busy"); }, 140);
+    }
+
+    function captionFor(shot) {
+        var isLatest = !state.picked && shot === state.recent[state.recent.length - 1];
+        // A picked capture can be days back, where a bare clock time would lie.
+        var stamp = sameDay(shot.timestamp) ? clockTime(shot.timestamp) : fullTime(shot.timestamp);
+        return (isLatest ? t("latest") + " \u00b7 " : "") +
+            stamp + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
+    }
+
     function renderCamera() {
         var shot = shownShot();
-        if (!shot || !shot.image_url) return;
+        if (!shot || !shot.image_url) { setBusy(false); return; }
 
         var img = $("frameImg");
         var src = shot.image_url;
+
         if (img.getAttribute("src") !== src) {
+            // The caption is written when the picture lands, not now, so the
+            // time and level under the frame always describe what is above it.
+            var first = $("skeleton").style.display !== "none";
+            if (!first) setBusy(true);
+
             img.onload = function () {
+                setBusy(false);
                 $("skeleton").style.display = "none";
                 $("frameMissing").classList.remove("is-shown");
                 img.style.visibility = "";
                 placeWaterline(shot);
+                $("camCaption").textContent = captionFor(shot);
             };
             // Captures are rotated out long before the readings are, so an older
             // point on the chart often has no frame left. Say so, rather than
             // leaving a broken image behind.
             img.onerror = function () {
+                setBusy(false);
                 $("skeleton").style.display = "none";
                 $("waterline").classList.remove("is-shown");
                 $("frameMissing").classList.add("is-shown");
                 img.style.visibility = "hidden";
+                $("camCaption").textContent = captionFor(shot);
             };
             img.src = src;
         } else {
-            placeWaterline(shot);
+            // Same src. It may still be in flight -- a language switch re-renders
+            // mid-load -- and clearing the flag then would drop the spinner while
+            // the old picture was still on screen. The pending onload finishes
+            // the job, in whichever language is current by the time it fires.
+            var settled = img.complete &&
+                (img.naturalHeight > 0 || $("frameMissing").classList.contains("is-shown"));
+            if (settled) {
+                setBusy(false);
+                placeWaterline(shot);
+                $("camCaption").textContent = captionFor(shot);
+            }
         }
 
-        var isLatest = !state.picked && shot === state.recent[state.recent.length - 1];
-        // A picked capture can be days back, where a bare clock time would lie.
-        var stamp = sameDay(shot.timestamp) ? clockTime(shot.timestamp) : fullTime(shot.timestamp);
-        $("camCaption").textContent = (isLatest ? t("latest") + " \u00b7 " : "") +
-            stamp + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
         $("camBack").classList.toggle("is-shown", !!state.picked || state.selected !== null);
     }
 
@@ -1814,13 +1899,20 @@
         state.chart.update("none");
     }
 
+    // Clicking along a line is quick, and the answers do not have to come back
+    // in the order they were asked for. Only the newest click may paint.
+    var pickSeq = 0;
+
     function pickMoment(timestamp) {
         // A point on a long range is an average over a bucket, so ask the server
         // for the nearest real capture rather than assuming one sits on the point.
         var window = Math.max(600, Math.round(state.bucket / 2) + 300);
+        var seq = ++pickSeq;
 
+        setBusy(true);
         fetchJson(API + "/reading?at=" + timestamp + "&window=" + window)
             .then(function (reading) {
+                if (seq !== pickSeq) return;
                 state.picked = reading;
                 state.selected = null;
                 renderCamera();
@@ -1828,6 +1920,8 @@
                 state.chart.update("none");
             })
             .catch(function () {
+                if (seq !== pickSeq) return;
+                setBusy(false);
                 // Nothing was captured near that moment; leave the view alone
                 // rather than blanking it.
                 note(t("noCaptureNear"), true);
