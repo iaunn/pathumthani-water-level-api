@@ -2,6 +2,7 @@ env
 images
 history.json
 .env
+.env*
 
 # holds live camera credentials
 list.md
