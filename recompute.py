@@ -19,10 +19,16 @@ Nothing is written without --apply. Run it once without to see what would change
     python recompute.py pathumthani --from 2026-09-25T06:00 --apply
     python recompute.py --all --from 2026-09-25 --apply --on-decline delete
 
-A capture the detector now declines is left alone unless --on-decline delete
-says otherwise. Keeping it means a number nothing stands behind stays on the
-chart; deleting it leaves a gap, which is what the tracker itself would have
-left. Neither is right in every case, so neither is the silent default.
+A capture the detector still cannot read is put on hold by default: the frame
+and the point stay, the level becomes the last one that was actually read, and
+calculated=false says so. That is what the tracker does live, so a recompute
+leaves the series in the same shape. --on-decline keep leaves the old number
+standing as a measurement; --on-decline delete removes the point outright.
+
+The reverse is the reason the frames are kept at all: a capture that was held
+because the detector could not read it, and that a fixed detector now can,
+stops being a carried value and becomes a reading. --only-held revisits just
+those.
 """
 
 import argparse
@@ -77,14 +83,14 @@ def local(ts):
 
 class Tally:
     def __init__(self):
-        self.seen = self.changed = self.same = 0
-        self.declined = self.deleted = self.missing = self.unreadable = 0
+        self.seen = self.changed = self.same = self.filled = 0
+        self.declined = self.held = self.deleted = self.missing = self.unreadable = 0
         self.worst = 0.0
         self.worst_at = None
 
 
 def recompute_station(station, start_ts, end_ts, limit, on_decline, apply_changes,
-                      smooth, verbose):
+                      smooth, verbose, only_held):
     app.load_calibration(station)
     app.load_roi(station)
     if not station.cal_points:
@@ -92,6 +98,8 @@ def recompute_station(station, start_ts, end_ts, limit, on_decline, apply_change
         return None
 
     readings = database.readings_in_range(station.id, start_ts, end_ts, limit)
+    if only_held:
+        readings = [d for d in readings if d.get("calculated") is False]
     span = f"up to {local(end_ts)}" if start_ts <= 0 else \
            f"between {local(start_ts)} and {local(end_ts)}"
     print(f"[{station.id}] {len(readings)} readings {span}"
@@ -102,6 +110,11 @@ def recompute_station(station, start_ts, end_ts, limit, on_decline, apply_change
     # same order rather than carried in from whatever ran last.
     station.detection_history = []
     tally = Tally()
+
+    # What a frame that cannot be read holds. Seeded from before the range, so
+    # recomputing an old window carries what was true then, not what is true now.
+    before = database.last_measured(station.id, before_ts=start_ts)
+    carry = before["level"] if before else None
 
     for doc in readings:
         tally.seen += 1
@@ -131,29 +144,57 @@ def recompute_station(station, start_ts, end_ts, limit, on_decline, apply_change
         mode = meta.get("mode") if raw_y is not None else "none"
         y = app.smooth_detection(station, raw_y) if (smooth and raw_y is not None) else raw_y
 
+        was_held = doc.get("calculated") is False
+
         if y is None:
             tally.declined += 1
-            action = "would delete" if on_decline == "delete" else "kept as is"
-            if apply_changes and on_decline == "delete":
-                database.delete_reading(station.id, doc["timestamp"])
+            if was_held:
+                # Already marked and already holding; nothing to say about it.
+                if verbose:
+                    print(f"  {local(doc['timestamp'])}  still unread, holding {doc['level']:.2f}m")
+                continue
+
+            if on_decline == "delete":
+                if apply_changes:
+                    database.delete_reading(station.id, doc["timestamp"])
                 tally.deleted += 1
-                action = "deleted"
-            print(f"  {local(doc['timestamp'])}  {doc['level']:.2f}m -> declines  ({action})")
+                print(f"  {local(doc['timestamp'])}  {doc['level']:.2f}m -> unread  "
+                      f"({'deleted' if apply_changes else 'would delete'})")
+            elif on_decline == "hold" and carry is not None:
+                if apply_changes:
+                    database.hold_reading(station.id, doc["timestamp"], carry)
+                tally.held += 1
+                print(f"  {local(doc['timestamp'])}  {doc['level']:.2f}m -> unread, "
+                      f"holding {carry:.2f}m (calculated=false)")
+            else:
+                print(f"  {local(doc['timestamp'])}  {doc['level']:.2f}m -> unread  (kept as is)")
             continue
 
         level = round(float(app.pixel_to_level(station, float(y))), 2)
+        carry = level
         shift = abs(level - float(doc["level"]))
-        if int(y) == int(doc.get("y", -1)) and level == round(float(doc["level"]), 2):
+
+        if not was_held and int(y) == int(doc.get("y", -1)) \
+                and level == round(float(doc["level"]), 2):
             tally.same += 1
             if verbose:
                 print(f"  {local(doc['timestamp'])}  {level:.2f}m unchanged")
             continue
 
+        if apply_changes:
+            database.update_reading(station.id, doc["timestamp"], level, y, mode)
+
+        if was_held:
+            # A frame that was being held now reads, which is the whole point of
+            # keeping it: the point stops being a carried value and becomes one.
+            tally.filled += 1
+            print(f"  {local(doc['timestamp'])}  held {doc['level']:.2f}m -> read "
+                  f"{level:.2f}m (y{int(y)}, {mode})   {level - float(doc['level']):+.2f}m")
+            continue
+
         tally.changed += 1
         if shift > tally.worst:
             tally.worst, tally.worst_at = shift, doc["timestamp"]
-        if apply_changes:
-            database.update_reading(station.id, doc["timestamp"], level, y, mode)
         print(f"  {local(doc['timestamp'])}  {doc['level']:.2f}m (y{doc.get('y')}) -> "
               f"{level:.2f}m (y{int(y)}, {mode})   {level - float(doc['level']):+.2f}m")
 
@@ -163,7 +204,10 @@ def recompute_station(station, start_ts, end_ts, limit, on_decline, apply_change
 def report(station_id, tally, apply_changes):
     verb = "rewrote" if apply_changes else "would rewrite"
     line = (f"[{station_id}] {tally.seen} read, {verb} {tally.changed}, "
-            f"{tally.same} already right, {tally.declined} now declined")
+            f"{tally.filled} held frames now read, "
+            f"{tally.same} already right, {tally.declined} still unread")
+    if tally.held:
+        line += f" ({tally.held} put on hold)"
     if tally.deleted:
         line += f" ({tally.deleted} deleted)"
     if tally.missing:
@@ -187,9 +231,14 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="stop after this many readings")
     ap.add_argument("--apply", action="store_true",
                     help="write the results; without it nothing is changed")
-    ap.add_argument("--on-decline", choices=("keep", "delete"), default="keep",
-                    help="what to do with a capture the detector no longer reads "
-                         "(default: keep, which leaves the old number in place)")
+    ap.add_argument("--on-decline", choices=("hold", "keep", "delete"), default="hold",
+                    help="what to do with a capture the detector no longer reads. "
+                         "hold (default) keeps the frame and the point but marks it "
+                         "calculated=false, holding the last level that was read; "
+                         "keep leaves the old number standing as a measurement; "
+                         "delete removes the point")
+    ap.add_argument("--only-held", action="store_true",
+                    help="only revisit captures already marked calculated=false")
     ap.add_argument("--no-smoothing", action="store_true",
                     help="write each frame's own reading, not the tracker's rolling median")
     ap.add_argument("--verbose", action="store_true", help="print unchanged readings too")
@@ -220,15 +269,19 @@ def main():
     if not args.apply:
         print("Dry run: nothing will be written. Add --apply to save the results.\n")
     elif args.on_decline == "delete":
-        print("Applying, and deleting readings the detector now declines.\n")
+        print("Applying, and deleting readings the detector still cannot read.\n")
+    elif args.on_decline == "keep":
+        print("Applying. Readings the detector cannot read keep their old value, "
+              "standing as measurements.\n")
     else:
-        print("Applying. Readings the detector now declines keep their old value "
-              "(--on-decline delete removes them instead).\n")
+        print("Applying. Readings the detector cannot read keep their frame and "
+              "their place, marked calculated=false and holding the last level "
+              "that was read.\n")
 
     for station in targets:
         tally = recompute_station(
             station, start_ts, end_ts, args.limit, args.on_decline,
-            args.apply, not args.no_smoothing, args.verbose)
+            args.apply, not args.no_smoothing, args.verbose, args.only_held)
         if tally:
             report(station.id, tally, args.apply)
         print()

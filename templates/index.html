@@ -422,6 +422,23 @@
     }
     .frame-missing.is-shown { display: flex; }
 
+    /* A level the detector could not read, carried from the last one it did.
+       It is on the chart so the series stays continuous and the frame behind it
+       can be re-read later, but it is not a measurement and must not look like
+       one. */
+    .held-tag {
+        display: none;
+        margin-right: 8px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--hairline-strong);
+        background: var(--wash);
+        color: var(--ink-2);
+        font-size: 11px;
+        letter-spacing: .01em;
+    }
+    .held-tag.is-shown { display: inline-block; }
+
     .cam-back {
         appearance: none;
         border: 1px solid var(--hairline);
@@ -731,7 +748,7 @@
         <div class="now-main">
             <div class="card-eyebrow">
                 <span id="heroLabel" data-i18n="currentLevel">Current water level</span>
-                <span id="heroTime"></span>
+                <span><span class="held-tag" id="heroHeld" data-i18n="heldTag">not measured</span><span id="heroTime"></span></span>
             </div>
 
             <div class="now-main-body">
@@ -955,6 +972,8 @@
             hourAgo: "1 hour ago",
             hoursAgo: "{n} hours ago",
             latest: "Latest",
+            heldTag: "not measured",
+            heldNote: "Held from the last reading \u00b7 the camera view could not be read",
             rising: "Rising",
             falling: "Falling",
             steady: "Steady",
@@ -1024,6 +1043,8 @@
             hourAgo: "1 \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e17\u0e35\u0e48\u0e41\u0e25\u0e49\u0e27",
             hoursAgo: "{n} \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e17\u0e35\u0e48\u0e41\u0e25\u0e49\u0e27",
             latest: "\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
+            heldTag: "\u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e27\u0e31\u0e14",
+            heldNote: "\u0e04\u0e07\u0e04\u0e48\u0e32\u0e40\u0e14\u0e34\u0e21\u0e44\u0e27\u0e49 \u00b7 \u0e2d\u0e48\u0e32\u0e19\u0e20\u0e32\u0e1e\u0e08\u0e32\u0e01\u0e01\u0e25\u0e49\u0e2d\u0e07\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08",
             rising: "\u0e40\u0e1e\u0e34\u0e48\u0e21\u0e02\u0e36\u0e49\u0e19",
             falling: "\u0e25\u0e14\u0e25\u0e07",
             steady: "\u0e04\u0e07\u0e17\u0e35\u0e48",
@@ -1360,6 +1381,10 @@
 
         $("heroValue").textContent = latest.level.toFixed(2);
         $("heroTime").textContent = fullTime(latest.timestamp);
+        // Say it plainly when the number on the front of the page was not read
+        // off the staff. It is the last one that was, held until a frame can be
+        // read again or someone settles it.
+        $("heroHeld").classList.toggle("is-shown", latest.calculated === false);
 
         var prev = state.recent[state.recent.length - 2];
         var delta = $("delta");
@@ -1420,7 +1445,8 @@
         // A picked capture can be days back, where a bare clock time would lie.
         var stamp = sameDay(shot.timestamp) ? clockTime(shot.timestamp) : fullTime(shot.timestamp);
         return (isLatest ? t("latest") + " \u00b7 " : "") +
-            stamp + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit");
+            stamp + " \u00b7 " + shot.level.toFixed(2) + " " + t("unit") +
+            (shot.calculated === false ? " \u00b7 " + t("heldTag") : "");
     }
 
     function renderCamera() {
@@ -1831,6 +1857,16 @@
                     borderJoinStyle: "round",
                     tension: 0.32,
                     fill: true,
+                    // A stretch where nothing could be read is the last level
+                    // held, not the river holding still. Dashed says which is
+                    // which without breaking the line -- the point is there,
+                    // and its frame with it, waiting to be re-read.
+                    segment: {
+                        borderDash: function (ctx) {
+                            var row = state.series[ctx.p1DataIndex];
+                            return row && row.measured === false ? [4, 4] : undefined;
+                        }
+                    },
                     pointRadius: 0,
                     pointHoverRadius: 4,
                     pointHoverBorderWidth: 2,

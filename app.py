@@ -168,7 +168,9 @@ def background_tracker(station):
             segment = capture_station_frames(station)
             frame = segment[-1] if segment else None
 
-            if frame is not None:
+            if frame is None:
+                print(f"[{station.id}] no frame came back from the camera")
+            else:
                 with station.lock:
                     aligned_frame = align_image(station, frame)
                     aligned_segment = [align_image(station, f) for f in segment] or None
@@ -179,35 +181,70 @@ def background_tracker(station):
                         frames=aligned_segment, meta=meta,
                         staff_paint=station.staff_paint,
                         still_water=station.still_water)
-                    # Nothing behind it. The gauge detector refusing -- the
-                    # colour check failed, or the region holds no staff -- is
-                    # the honest answer, and the cascade that used to run here
-                    # only ever guessed: it reported 885 px with the surface
-                    # at 646, and 742 px where the staff met the water at 985.
-
                     # Which detector answers is worth keeping with the reading:
                     # a blind number has no gauge colour behind it.
                     station.detection_mode = (meta.get("mode")
                                               if raw_y is not None else "none")
-                    # Smooth only an observation. When the detector declines,
-                    # smoothing would hand back a value carried from earlier
-                    # cycles, and five-minute repeats would draw a flat line
-                    # over a gap that ought to be visible as a gap.
+                    # Smooth only an observation. Smoothing a declined cycle
+                    # would hand back a value built from earlier ones and pass
+                    # it off as this frame's.
                     y = smooth_detection(station, raw_y) if raw_y is not None else None
+
+                timestamp = int(time.time())
 
                 if y is not None:
                     level = float(pixel_to_level(station, float(y)))
-
-                    timestamp = int(time.time())
                     image_url = store_frame(station, aligned_frame, "history", f"_{timestamp}")
-
                     # "y" lets the dashboard draw the detected waterline over
                     # the frame, so a wrong reading is visible rather than implied.
                     database.add_reading(station.id, timestamp, level, image_url, y,
                                           mode=station.detection_mode)
-                    database.prune_readings(station.id, RETENTION_DAYS)
-                    rotate_images(station)
-                    print(f"[{station.id}] check successful. Level: {level:.2f}m")
+                    # The smoothed row is what was stored; the raw one is what
+                    # this frame actually said, and the two parting company is
+                    # the first sign of a detector going wrong.
+                    raw_note = "" if raw_y == y else f", frame said y{raw_y}"
+                    via = meta.get("via")
+                    print(f"[{station.id}] read {level:.2f}m "
+                          f"(y{int(y)}{raw_note}, {station.detection_mode}"
+                          f"{', via the ' + via if via else ''})")
+                else:
+                    # The detector could not read this frame, so the frame is
+                    # what matters: it is the evidence, and a cycle that stored
+                    # nothing could never be recovered -- recompute.py would
+                    # have no picture to re-read. It is kept, with the last
+                    # level that was actually read carried forward and marked
+                    # calculated=false, for recompute.py or a person to settle
+                    # later. No y goes with it, so nothing draws a waterline on
+                    # a picture the level does not describe.
+                    last = database.last_measured(station.id)
+                    image_url = store_frame(station, aligned_frame, "history", f"_{timestamp}")
+
+                    # Why it declined, and what it was looking at when it did.
+                    # A cycle that says nothing is indistinguishable from one
+                    # that never ran, and the candidate row is what tells a
+                    # near miss from a detector that was lost.
+                    why = meta.get("reason", "no reason recorded")
+                    candidate = meta.get("candidate")
+                    if candidate is not None:
+                        near = float(pixel_to_level(station, float(candidate)))
+                        why += f"; it was looking at y{candidate} ({near:.2f}m)"
+
+                    if last is None:
+                        # Nothing has ever been read here, so there is nothing
+                        # to carry. The frame is stored and the cycle files no
+                        # point rather than inventing a first one.
+                        print(f"[{station.id}] not read ({meta.get('mode')}): {why}. "
+                              f"Nothing to hold yet, frame kept")
+                    else:
+                        database.add_reading(station.id, timestamp, last["level"], image_url,
+                                             None, mode="none", calculated=False)
+                        print(f"[{station.id}] not read ({meta.get('mode')}): {why}. "
+                              f"Holding {last['level']:.2f}m from "
+                              f"{datetime.fromtimestamp(last['timestamp']):%H:%M}, "
+                              f"calculated=false")
+
+                database.prune_readings(station.id, RETENTION_DAYS)
+                rotate_images(station)
         except Exception as e:
             # One station's camera going down must not stop the others.
             print(f"[{station.id}] background tracker error: {e}")
@@ -1064,11 +1101,13 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
         # was the colour check that declined.
         if meta is not None:
             meta["mode"] = "gauge"
+            meta["reason"] = "the staff is there but its paint is out of the mask"
         return None
     column = yellow or _banding_column(image, x_start, x_end, ys, ye)
     if column is None:
         if meta is not None:
             meta["mode"] = "none"
+            meta["reason"] = "no staff found in the region"
         return None
     left, right, top, ref_end = column
     if meta is not None:
@@ -1088,6 +1127,8 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
 
     reference = np.median(contrast[top:max(top + 40, ref_end)])
     if reference <= 0:
+        if meta is not None:
+            meta["reason"] = "no contrast anywhere down the staff"
         return None
 
     threshold = reference * texture_drop
@@ -1142,12 +1183,25 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     # Everywhere else, and wherever there is no painted column, no collapse
     # means no reading -- a dark frame, a flat one, or a gauge out of shot.
     if not collapsed:
+        if meta is not None:
+            # What it was looking at when it gave up is the most useful thing to
+            # put in a log: it says whether the scan was near the water or lost.
+            meta["candidate"] = waterline
+            if bottom is not None:
+                # Not a failure: on still water this is the reading, and the log
+                # is the only place that says so.
+                meta["via"] = "paint edge"
+            else:
+                meta["reason"] = "the staff never stopped looking like staff"
         return bottom
 
     # A colourless staff has no paint edge to check the reading against, so the
     # one thing left to ask is whether its graduations were legible at all.
     if waterline is not None and mask is None and not _bands_readable(
             image, left, right, top, waterline):
+        if meta is not None:
+            meta["candidate"] = waterline
+            meta["reason"] = "the graduations are not legible where it read"
         return None
 
     # One frame, or the same frame several times over, carries no motion to

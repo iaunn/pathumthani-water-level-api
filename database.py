@@ -42,7 +42,18 @@ def init():
     print(f"MongoDB ready: database={db.name}")
 
 
-def add_reading(station_id, timestamp, level, image_url, y, mode=None):
+def add_reading(station_id, timestamp, level, image_url, y, mode=None, calculated=True):
+    """Record one capture.
+
+    `calculated` false means the detector could not read this frame and the
+    level is the last one it did read, carried forward. The frame is kept either
+    way -- it is the evidence, and without it recompute.py has nothing to work
+    from later. `y` is omitted for those, so the dashboard draws no waterline on
+    a picture the level does not describe.
+
+    Documents written before this field existed were all measured, so anything
+    without it reads as calculated.
+    """
     timestamp = int(timestamp)
     level = round(float(level), 2)
 
@@ -51,9 +62,12 @@ def add_reading(station_id, timestamp, level, image_url, y, mode=None):
         "timestamp": timestamp,
         "level": level,
         "image_url": image_url,
-        "y": int(y),
         "created_at": datetime.now(timezone.utc),
     }
+    if y is not None:
+        doc["y"] = int(y)
+    if not calculated:
+        doc["calculated"] = False
     # Which detector answered. Worth knowing afterwards: a "blind" reading came
     # from texture alone, with no gauge colour in the region to check it against.
     if mode:
@@ -62,11 +76,43 @@ def add_reading(station_id, timestamp, level, image_url, y, mode=None):
     _readings.insert_one(doc)
 
 
+def last_measured(station_id, before_ts=None):
+    """The newest reading the detector actually read, or None.
+
+    What a declined cycle carries forward. Read from the database rather than
+    held in memory, so a restart, or a second replica, carries the same value.
+    `before_ts` bounds it, which is what a recompute of an old range needs.
+    """
+    query = {"station": station_id, "calculated": {"$ne": False}}
+    if before_ts is not None:
+        query["timestamp"] = {"$lt": int(before_ts)}
+    return _readings.find_one(
+        query,
+        {"_id": 0, "timestamp": 1, "level": 1},
+        sort=[("timestamp", DESCENDING)],
+    )
+
+
+def hold_reading(station_id, timestamp, level):
+    """Mark one capture as unread, holding `level` from an earlier one.
+
+    The frame stays; what goes is the claim that this picture was measured.
+    """
+    result = _readings.update_one(
+        {"station": station_id, "timestamp": int(timestamp)},
+        {"$set": {"level": round(float(level), 2), "calculated": False,
+                  "mode": "none", "recomputed_at": datetime.now(timezone.utc)},
+         "$unset": {"y": ""}},
+    )
+    return result.modified_count > 0
+
+
 def latest_readings(station_id, limit):
     """Newest raw readings, oldest-first. Feeds the current value and the capture strip."""
     docs = _readings.find(
         {"station": station_id},
-        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1}
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1,
+         "calculated": 1}
     ).sort("timestamp", DESCENDING).limit(limit)
     return sorted(docs, key=lambda d: d["timestamp"])
 
@@ -76,7 +122,8 @@ def readings_in_range(station_id, start_ts, end_ts, limit=0):
     cursor = _readings.find(
         {"station": station_id,
          "timestamp": {"$gte": int(start_ts), "$lte": int(end_ts)}},
-        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1}
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1, "mode": 1,
+         "calculated": 1}
     ).sort("timestamp", ASCENDING)
     if limit:
         cursor = cursor.limit(limit)
@@ -85,12 +132,15 @@ def readings_in_range(station_id, start_ts, end_ts, limit=0):
 
 def update_reading(station_id, timestamp, level, y, mode=None):
     """Rewrite what one capture was read as. Returns True if a document changed."""
+    # Reading it is what makes it calculated, and the field only marks the ones
+    # that are not, so a successful recompute clears it.
     update = {"$set": {"level": round(float(level), 2), "y": int(y),
-                       "recomputed_at": datetime.now(timezone.utc)}}
+                       "recomputed_at": datetime.now(timezone.utc)},
+              "$unset": {"calculated": ""}}
     if mode:
         update["$set"]["mode"] = mode
     else:
-        update["$unset"] = {"mode": ""}
+        update["$unset"]["mode"] = ""
     result = _readings.update_one(
         {"station": station_id, "timestamp": int(timestamp)}, update)
     return result.modified_count > 0
@@ -113,7 +163,8 @@ def reading_near(station_id, timestamp, window):
     candidates = list(_readings.find(
         {"station": station_id,
          "timestamp": {"$gte": timestamp - window, "$lte": timestamp + window}},
-        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1},
+        {"_id": 0, "timestamp": 1, "level": 1, "image_url": 1, "y": 1,
+         "calculated": 1},
     ).sort("timestamp", ASCENDING))
 
     if not candidates:
@@ -151,6 +202,11 @@ def history_series(station_id, start_ts, end_ts, target_points=800):
             "level": {"$avg": "$level"},
             "low": {"$min": "$level"},
             "high": {"$max": "$level"},
+            # A bucket is measured if anything in it was actually read. One that
+            # is not holds only levels carried forward from an earlier capture,
+            # and the chart draws it as the held value it is rather than as a
+            # flat stretch of river.
+            "measured": {"$max": {"$cond": [{"$eq": ["$calculated", False]}, 0, 1]}},
         }},
         {"$sort": {"_id": 1}},
     ]))
@@ -162,6 +218,7 @@ def history_series(station_id, start_ts, end_ts, target_points=800):
             "level": round(p["level"], 2),
             "low": round(p["low"], 2),
             "high": round(p["high"], 2),
+            "measured": bool(p.get("measured", 1)),
         } for p in points],
     }
 
