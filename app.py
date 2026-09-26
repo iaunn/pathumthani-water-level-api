@@ -106,9 +106,27 @@ def _log_request(status, note=""):
         agent = agent[:117] + "..."
     state = getattr(g, "cache_state", None)
     print(f'{client_ip()} "{request.method} {request.full_path.rstrip("?")}" '
-          f'{status} {took:.0f}ms'
+          f'{status} time={_duration(took)}'
           f'{" cache=" + state if state else ""} ua="{agent}"{note}', flush=True)
     g.logged = True
+
+
+def _duration(ms):
+    """A response time with enough precision to be worth reading.
+
+    A cache hit answers in a fraction of a millisecond, and rounded to whole
+    ones that printed as "0ms", which reads as a missing field rather than a
+    fast reply. The scale earns its digits: hundredths under a millisecond,
+    tenths under ten, and none above, where a decimal is noise. One unit
+    throughout, so the field still sorts and greps as a number.
+
+    It measures the work this app did -- routing through to the finished
+    response -- not the round trip a visitor sees, which includes Cloudflare
+    and the network.
+    """
+    if ms < 1:
+        return f"{ms:.2f}ms"
+    return f"{ms:.1f}ms" if ms < 10 else f"{ms:.0f}ms"
 
 
 @app.after_request

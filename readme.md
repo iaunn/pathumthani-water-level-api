@@ -212,9 +212,14 @@ python recompute.py --all --from 2026-09-25 --apply --on-decline delete
 method, path, status, เวลาที่ใช้, สถานะ cache และ User-Agent
 
 ```
-203.0.113.9 "GET /api/pathumthani/history?from=1790...&to=1790..." 200 3ms cache=hit ua="Mozilla/5.0 (...)"
-203.0.113.9 "GET /api/pathumthani/recent" 200 41ms cache=miss ua="Mozilla/5.0 (...)"
+203.0.113.9 "GET /api/pathumthani/recent" 200 time=2.3ms cache=miss ua="Mozilla/5.0 (...)"
+203.0.113.9 "GET /api/pathumthani/recent" 200 time=0.07ms cache=hit ua="Mozilla/5.0 (...)"
+127.0.0.1 "GET /s/pathumthani" 200 time=6.9ms ua="Mozilla/5.0 (...)"
 ```
+
+`time=` คือเวลาที่แอปใช้ทำงานจริง (ตั้งแต่ route จนสร้าง response เสร็จ) ไม่ใช่เวลาไป-กลับที่ผู้ใช้เจอ
+ซึ่งรวม Cloudflare กับเน็ตเวิร์กด้วย ทศนิยมปรับตามขนาด: ต่ำกว่า 1 ms สองตำแหน่ง, ต่ำกว่า 10 ms หนึ่งตำแหน่ง,
+เกินนั้นเป็นจำนวนเต็ม เพราะ cache hit ตอบในเสี้ยวมิลลิวินาที ถ้าปัดเป็นจำนวนเต็มจะกลายเป็น `0ms` ซึ่งดูเหมือนไม่มีค่า
 
 **หมายเหตุเรื่องความน่าเชื่อถือของ IP** สองเฮดเดอร์นั้นเป็นแค่เฮดเดอร์ ใครที่ยิงตรงมาที่แอปได้
 ก็เขียนค่าอะไรลงไปก็ได้ จะเชื่อถือได้ก็ต่อเมื่อแอปเข้าถึงได้ผ่าน Cloudflare ทางเดียวเท่านั้น
