@@ -11,7 +11,8 @@ import warnings
 import json
 import threading
 import time
-from flask import Flask, jsonify, request, render_template, abort, Response
+from flask import Flask, jsonify, request, render_template, abort, Response, g, make_response
+import logging
 from functools import wraps
 import hmac
 from datetime import datetime
@@ -34,6 +35,98 @@ cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
 
 # Get TTL from environment variable or set a default
 CACHE_TTL = int(os.getenv('CACHE_TTL', 300))
+
+# --- API cache and access log ------------------------------------------------
+# How long a read-only API answer is served from memory. The readings behind it
+# only change every five minutes, so a browser refreshing, or twenty of them,
+# need not reach MongoDB each time. In memory means per process: with several
+# workers each keeps its own, which is fine for a cache and worth knowing when
+# the hit rate looks lower than expected. 0 turns it off.
+API_CACHE_SECONDS = int(os.getenv("API_CACHE_SECONDS", 60))
+
+# Werkzeug's own access line has no room for any of this, and two lines per
+# request is worse than one. Its errors still come through.
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+
+def client_ip():
+    """The address the request came from, as far as it can be trusted.
+
+    Cloudflare puts the real client in CF-Connecting-IP and appends to
+    X-Forwarded-For; remote_addr is only ever the edge. Both headers are just
+    headers, so anything that can reach this app directly can write whatever it
+    likes in them -- they are worth believing only while the app is reachable
+    through Cloudflare alone.
+    """
+    forwarded = request.headers.get("CF-Connecting-IP") or \
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    return forwarded or request.remote_addr or "-"
+
+
+def cached_api(view):
+    """Serve this GET from memory for API_CACHE_SECONDS, and say which happened.
+
+    Rolled by hand rather than with @cache.cached because the point is the
+    hit/miss: with the decorator the view simply does not run on a hit, and
+    nothing downstream can tell that apart from a fast miss.
+    """
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if API_CACHE_SECONDS <= 0 or request.method != "GET":
+            return view(*args, **kwargs)
+
+        key = "api:" + request.full_path.rstrip("?")
+        cached = cache.get(key)
+        if cached is not None:
+            g.cache_state = "hit"
+            body, status, mimetype = cached
+            return app.response_class(body, status=status, mimetype=mimetype)
+
+        g.cache_state = "miss"
+        response = make_response(view(*args, **kwargs))
+        # Only a good answer. A 404 for a capture that is not there yet, or a
+        # 409 for an uncalibrated station, both stop being true the moment the
+        # thing arrives.
+        if response.status_code == 200:
+            cache.set(key, (response.get_data(), response.status_code, response.mimetype),
+                      timeout=API_CACHE_SECONDS)
+        return response
+    return wrapper
+
+
+@app.before_request
+def _start_timer():
+    g.started_at = time.monotonic()
+
+
+def _log_request(status, note=""):
+    took = (time.monotonic() - getattr(g, "started_at", time.monotonic())) * 1000
+    agent = request.headers.get("User-Agent", "-")
+    if len(agent) > 120:
+        agent = agent[:117] + "..."
+    state = getattr(g, "cache_state", None)
+    print(f'{client_ip()} "{request.method} {request.full_path.rstrip("?")}" '
+          f'{status} {took:.0f}ms'
+          f'{" cache=" + state if state else ""} ua="{agent}"{note}', flush=True)
+    g.logged = True
+
+
+@app.after_request
+def _access_log(response):
+    _log_request(response.status_code)
+    return response
+
+
+@app.teardown_request
+def _access_log_failed(exc):
+    # Flask usually turns a view's exception into a 500 response and
+    # after_request still runs, so this is the uncommon path: exceptions that
+    # propagate instead, under PROPAGATE_EXCEPTIONS or a test client. A request
+    # that blew up is the one most worth having a line for, so it is covered
+    # either way and never logged twice.
+    if exc is not None and not getattr(g, "logged", False):
+        _log_request(500, f' error="{type(exc).__name__}: {exc}"')
+
 
 # Maximum number of captures to keep (older ones are deleted automatically)
 MAX_KEEP = int(os.getenv("MAX_KEEP_IMAGES", 200))
@@ -1695,6 +1788,7 @@ def resolve_station(station_id):
     return stations.get(station_id)
 
 @app.route('/api/stations', methods=['GET'])
+@cached_api
 def get_stations():
     return jsonify({
         "default": stations.default_id(),
@@ -1894,6 +1988,9 @@ def calibrate_ui(station_id=None):
     """Serve the calibration UI page."""
     return render_template('calibrate.html', station_id=resolve_station(station_id).id)
 
+# Calibration, markers and the detection region are deliberately not cached:
+# they are small, rarely read, and saved from a page that reads them straight
+# back. A minute of staleness there would show the editor its own old values.
 @app.route('/api/calibration', methods=['GET', 'POST'])
 @app.route('/api/<station_id>/calibration', methods=['GET', 'POST'])
 @protected('POST')
@@ -2048,12 +2145,14 @@ def dashboard(station_id=None):
 
 @app.route('/api/recent', methods=['GET'])
 @app.route('/api/<station_id>/recent', methods=['GET'])
+@cached_api
 def get_recent(station_id=None):
     """Raw recent readings, for the current value and the capture strip."""
     return jsonify(database.latest_readings(resolve_station(station_id).id, RECENT_LIMIT))
 
 @app.route('/api/reading', methods=['GET'])
 @app.route('/api/<station_id>/reading', methods=['GET'])
+@cached_api
 def get_reading(station_id=None):
     """The capture nearest a moment, so a point on the chart can show its frame."""
     station = resolve_station(station_id)
@@ -2073,6 +2172,7 @@ def get_reading(station_id=None):
 
 @app.route('/api/history', methods=['GET'])
 @app.route('/api/<station_id>/history', methods=['GET'])
+@cached_api
 def get_history(station_id=None):
     """
     Level over a time range, for the chart.
