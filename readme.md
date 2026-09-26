@@ -212,10 +212,14 @@ python recompute.py --all --from 2026-09-25 --apply --on-decline delete
 method, path, status, เวลาที่ใช้, สถานะ cache และ User-Agent
 
 ```
-203.0.113.9 "GET /api/pathumthani/recent" 200 time=2.3ms cache=miss ua="Mozilla/5.0 (...)"
-203.0.113.9 "GET /api/pathumthani/recent" 200 time=0.07ms cache=hit ua="Mozilla/5.0 (...)"
-127.0.0.1 "GET /s/pathumthani" 200 time=6.9ms ua="Mozilla/5.0 (...)"
+2026-09-26T12:53:40+07:00 203.0.113.9 "GET /api/pathumthani/recent" 200 time=2.3ms cache=miss ua="Mozilla/5.0 (...)"
+2026-09-26T12:53:40+07:00 203.0.113.9 "GET /api/pathumthani/recent" 200 time=0.07ms cache=hit ua="Mozilla/5.0 (...)"
+2026-09-26T12:53:40+07:00 127.0.0.1 "GET /s/pathumthani" 200 time=6.9ms ua="Mozilla/5.0 (...)"
 ```
+
+เวลาเป็น ISO 8601 พร้อม offset เสมอ container รันด้วย UTC จึงออกมาเป็น `+00:00`
+ถ้าอยากให้ log อ่านเป็นเวลาไทยตรง ๆ ตั้ง `TZ=Asia/Bangkok` ให้ container แล้วจะได้ `+07:00`
+ที่ต้องมี offset ติดมาด้วยเพราะเวลาเปล่า ๆ ชวนให้อ่านผิดไปเจ็ดชั่วโมง
 
 `time=` คือเวลาที่แอปใช้ทำงานจริง (ตั้งแต่ route จนสร้าง response เสร็จ) ไม่ใช่เวลาไป-กลับที่ผู้ใช้เจอ
 ซึ่งรวม Cloudflare กับเน็ตเวิร์กด้วย ทศนิยมปรับตามขนาด: ต่ำกว่า 1 ms สองตำแหน่ง, ต่ำกว่า 10 ms หนึ่งตำแหน่ง,
