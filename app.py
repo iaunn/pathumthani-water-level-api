@@ -105,7 +105,11 @@ def _log_request(status, note=""):
     if len(agent) > 120:
         agent = agent[:117] + "..."
     state = getattr(g, "cache_state", None)
-    print(f'{client_ip()} "{request.method} {request.full_path.rstrip("?")}" '
+    # Local time with its offset spelled out. The container runs in UTC while
+    # the river is read in ICT, and a bare clock time invites the reader to
+    # subtract seven hours in the wrong direction.
+    when = datetime.now().astimezone().isoformat(timespec="seconds")
+    print(f'{when} {client_ip()} "{request.method} {request.full_path.rstrip("?")}" '
           f'{status} time={_duration(took)}'
           f'{" cache=" + state if state else ""} ua="{agent}"{note}', flush=True)
     g.logged = True
