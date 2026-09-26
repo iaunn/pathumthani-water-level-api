@@ -63,35 +63,64 @@ def client_ip():
     return forwarded or request.remote_addr or "-"
 
 
-def cached_api(view):
+def snap_window(start_ts, end_ts):
+    """Round a requested time range onto the grid the cache expires on.
+
+    The dashboard asks for "now minus 24 hours, to now", so every visitor sends
+    a different pair of seconds and every request was its own cache key. The one
+    endpoint heavy enough to be worth caching was the one that never hit it.
+
+    On a shared grid, everyone who asks inside the same window gets the same
+    key, and the entry is built once and serves the rest. The ends move by less
+    than the grid on a range measured in days, and the series is bucketed at
+    five minutes or coarser before it is drawn, so nothing visible changes. The
+    window only ever grows outward, so no reading that was asked for is lost.
+    """
+    if API_CACHE_SECONDS <= 0:
+        return start_ts, end_ts
+    grid = API_CACHE_SECONDS
+    return (start_ts // grid) * grid, -((-end_ts) // grid) * grid
+
+
+def cached_api(key=None):
     """Serve this GET from memory for API_CACHE_SECONDS, and say which happened.
 
     Rolled by hand rather than with @cache.cached because the point is the
     hit/miss: with the decorator the view simply does not run on a hit, and
     nothing downstream can tell that apart from a fast miss.
+
+    `key` names a function returning something the request can be cached under
+    when the raw query string will not do -- a range of unix seconds that is a
+    little different for every visitor, say. Returning None falls back to the
+    path, and the view is free to answer however it likes; a non-200 is never
+    stored either way.
     """
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        if API_CACHE_SECONDS <= 0 or request.method != "GET":
-            return view(*args, **kwargs)
+    def decorate(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if API_CACHE_SECONDS <= 0 or request.method != "GET":
+                return view(*args, **kwargs)
 
-        key = "api:" + request.full_path.rstrip("?")
-        cached = cache.get(key)
-        if cached is not None:
-            g.cache_state = "hit"
-            body, status, mimetype = cached
-            return app.response_class(body, status=status, mimetype=mimetype)
+            custom = key() if key else None
+            cache_key = "api:" + (custom or request.full_path.rstrip("?"))
+            cached = cache.get(cache_key)
+            if cached is not None:
+                g.cache_state = "hit"
+                body, status, mimetype = cached
+                return app.response_class(body, status=status, mimetype=mimetype)
 
-        g.cache_state = "miss"
-        response = make_response(view(*args, **kwargs))
-        # Only a good answer. A 404 for a capture that is not there yet, or a
-        # 409 for an uncalibrated station, both stop being true the moment the
-        # thing arrives.
-        if response.status_code == 200:
-            cache.set(key, (response.get_data(), response.status_code, response.mimetype),
-                      timeout=API_CACHE_SECONDS)
-        return response
-    return wrapper
+            g.cache_state = "miss"
+            response = make_response(view(*args, **kwargs))
+            # Only a good answer. A 404 for a capture that is not there yet, or
+            # a 409 for an uncalibrated station, both stop being true the moment
+            # the thing arrives.
+            if response.status_code == 200:
+                cache.set(cache_key,
+                          (response.get_data(), response.status_code, response.mimetype),
+                          timeout=API_CACHE_SECONDS)
+            return response
+        return wrapper
+    return decorate
 
 
 @app.before_request
@@ -1810,7 +1839,7 @@ def resolve_station(station_id):
     return stations.get(station_id)
 
 @app.route('/api/stations', methods=['GET'])
-@cached_api
+@cached_api()
 def get_stations():
     return jsonify({
         "default": stations.default_id(),
@@ -2167,14 +2196,14 @@ def dashboard(station_id=None):
 
 @app.route('/api/recent', methods=['GET'])
 @app.route('/api/<station_id>/recent', methods=['GET'])
-@cached_api
+@cached_api()
 def get_recent(station_id=None):
     """Raw recent readings, for the current value and the capture strip."""
     return jsonify(database.latest_readings(resolve_station(station_id).id, RECENT_LIMIT))
 
 @app.route('/api/reading', methods=['GET'])
 @app.route('/api/<station_id>/reading', methods=['GET'])
-@cached_api
+@cached_api()
 def get_reading(station_id=None):
     """The capture nearest a moment, so a point on the chart can show its frame."""
     station = resolve_station(station_id)
@@ -2192,9 +2221,38 @@ def get_reading(station_id=None):
         return jsonify({"error": "no capture near that time"}), 404
     return jsonify(reading)
 
+def history_window():
+    """The range this request is asking for, snapped, or None if it is unusable.
+
+    One place, because the cache key and the answer have to agree: a key built
+    from a different range than the body was computed for would hand one
+    visitor another's window.
+    """
+    now = int(time.time())
+    try:
+        end_ts = int(request.args.get("to", now))
+        start_ts = int(request.args.get("from", end_ts - 86400))
+    except ValueError:
+        return None
+    if start_ts >= end_ts:
+        return None
+
+    # Clamp rather than reject: a range beyond retention has no data anyway, and
+    # an unbounded span would scan the whole collection.
+    start_ts = max(start_ts, end_ts - MAX_RANGE_DAYS * 86400)
+    return snap_window(start_ts, end_ts)
+
+
+def history_key():
+    window = history_window()
+    if window is None:
+        return None
+    return f"history:{request.path}:{window[0]}:{window[1]}"
+
+
 @app.route('/api/history', methods=['GET'])
 @app.route('/api/<station_id>/history', methods=['GET'])
-@cached_api
+@cached_api(key=history_key)
 def get_history(station_id=None):
     """
     Level over a time range, for the chart.
@@ -2205,19 +2263,10 @@ def get_history(station_id=None):
     thousand.
     """
     station = resolve_station(station_id)
-    now = int(time.time())
-    try:
-        end_ts = int(request.args.get("to", now))
-        start_ts = int(request.args.get("from", end_ts - 86400))
-    except ValueError:
-        return jsonify({"error": "from and to must be unix seconds"}), 400
-
-    if start_ts >= end_ts:
-        return jsonify({"error": "from must be earlier than to"}), 400
-
-    # Clamp rather than reject: a range beyond retention has no data anyway, and
-    # an unbounded span would scan the whole collection.
-    start_ts = max(start_ts, end_ts - MAX_RANGE_DAYS * 86400)
+    window = history_window()
+    if window is None:
+        return jsonify({"error": "from and to must be unix seconds, from earlier than to"}), 400
+    start_ts, end_ts = window
 
     series = database.history_series(station.id, start_ts, end_ts)
     series["from"] = start_ts
