@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="th">
 <head>
 <meta charset="UTF-8">
 
@@ -738,8 +738,8 @@
             <span id="statusText">Connecting</span>
         </span>
         <div class="lang-switch" id="langSwitch" role="group" data-i18n-aria="language" aria-label="Language">
-            <button type="button" data-lang="en" aria-pressed="true">EN</button>
-            <button type="button" data-lang="th" aria-pressed="false">TH</button>
+            <button type="button" data-lang="en" aria-pressed="false">EN</button>
+            <button type="button" data-lang="th" aria-pressed="true">TH</button>
         </div>
         <button class="icon-btn" id="themeBtn" type="button" data-i18n-aria="themeToggle" aria-label="Toggle dark mode">
             <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -1106,7 +1106,9 @@
         }
     };
 
-    var lang = (navigator.language || "en").toLowerCase().indexOf("th") === 0 ? "th" : "en";
+    // Thai is every visitor's first page, however foreign their browser is.
+    // A pick made on the switch below is remembered and overrides this.
+    var lang = "th";
     try {
         var savedLang = localStorage.getItem("wl-lang");
         if (savedLang === "en" || savedLang === "th") lang = savedLang;
