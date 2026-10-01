@@ -1304,8 +1304,17 @@ def detect_water_level_on_gauge(image, x_start=225, x_end=390, y_start=0, y_end=
     mask = _gauge_mask(image, left, right) if yellow else None
     soft = _reading_mask(image, left, right) if yellow else None
 
+    # Texture as a ratio to how brightly the row is lit, not in raw levels. A
+    # shadow across the staff halves the levels while leaving the pattern
+    # intact, and a raw range then reads as a collapse: on the 29 Sep 16:29
+    # frame the sunlit staff spanned 189 levels and the shadowed staff below it
+    # 81, against a threshold of half the reference, so the scan stopped at the
+    # edge of a shadow on the water and reported 2.79m with the surface at
+    # 2.27m. Divided by the row's own mean the same two bands read 1.46 and
+    # 1.11 -- the shadow barely moves it -- while water sits at 0.05.
     strip = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(float)[:, left:right + 1]
-    contrast = _smooth(strip.max(axis=1) - strip.min(axis=1))
+    contrast = _smooth((strip.max(axis=1) - strip.min(axis=1))
+                       / np.maximum(strip.mean(axis=1), 1.0))
 
     reference = np.median(contrast[top:max(top + 40, ref_end)])
     if reference <= 0:
