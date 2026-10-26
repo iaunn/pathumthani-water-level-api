@@ -291,8 +291,15 @@ MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", 92))
 # How many raw captures the dashboard's strip and current reading need.
 RECENT_LIMIT = 24
 
+# How often each station is read. Every camera here is pointed at a river, and
+# a river does not move far in a quarter of an hour: at Pathumthani the level
+# shifted 10px, 6cm, across a whole afternoon. Shorter intervals mostly buy
+# repeats of the same reading, at the cost of a capture and an upload each.
+TRACKER_INTERVAL_SECONDS = int(os.getenv("TRACKER_INTERVAL_SECONDS", 900))
+
 def background_tracker(station):
-    """Runs every 5 minutes to capture and record one station's water level."""
+    """Captures and records one station's water level, every
+    TRACKER_INTERVAL_SECONDS."""
     while True:
         try:
             print(f"[{station.id}] running background water level check...")
@@ -304,7 +311,7 @@ def background_tracker(station):
                 # Without calibration a pixel row converts to a meaningless
                 # level, which is worse on a flood dashboard than no reading.
                 print(f"[{station.id}] no calibration yet, skipping")
-                time.sleep(300)
+                time.sleep(TRACKER_INTERVAL_SECONDS)
                 continue
 
             # Several frames, not one: still water mirrors the staff, and only
@@ -393,7 +400,7 @@ def background_tracker(station):
             # One station's camera going down must not stop the others.
             print(f"[{station.id}] background tracker error: {e}")
 
-        time.sleep(300) # Wait 5 minutes
+        time.sleep(TRACKER_INTERVAL_SECONDS)
 
 # Useful bounds
 def get_bounds(station):

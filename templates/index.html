@@ -832,9 +832,9 @@
         </label>
         <div class="segmented" id="rangeControl" role="group" data-i18n-aria="timeRange" aria-label="Time range">
             <button type="button" data-days="1" aria-pressed="true">24h</button>
+            <button type="button" data-days="2" aria-pressed="false">2d</button>
             <button type="button" data-days="7" aria-pressed="false">7d</button>
             <button type="button" data-days="30" aria-pressed="false">30d</button>
-            <button type="button" data-days="92" aria-pressed="false">3<span data-i18n="monthsShort">mo</span></button>
             <button type="button" data-custom="1" aria-pressed="false" data-i18n="customRange">Custom</button>
         </div>
         </div>
@@ -1001,15 +1001,14 @@
             rising: "Rising",
             falling: "Falling",
             steady: "Steady",
-            deltaMoved: " {d} m in the last 5 minutes",
-            deltaSteady: " over the last 5 minutes",
+            deltaMoved: " {d} m over the last {m}",
+            deltaSteady: " over the last {m}",
             showMarkers: "Flood markers",
             backToLatest: "Back to latest",
             feedSource: "Camera source",
             noImageTitle: "No image kept",
             noImageBody: "Frames are rotated out long before the readings are.",
             noCaptureNear: "No capture was taken near that point.",
-            monthsShort: "mo",
             customRange: "Custom",
             rangeFrom: "From",
             rangeTo: "To",
@@ -1027,8 +1026,7 @@
             hours: "hours",
             minute: "minute",
             minutes: "minutes",
-            months: "months",
-            everyFiveMin: "readings captured every 5 minutes",
+            everyRaw: "readings captured every {d}",
             averagedEvery: "averaged every {d}",
             trendSub: "Last {h} hours \u00b7 readings captured every 5 minutes",
             gaugeAt: "Gauge at {t}"
@@ -1072,15 +1070,14 @@
             rising: "\u0e40\u0e1e\u0e34\u0e48\u0e21\u0e02\u0e36\u0e49\u0e19",
             falling: "\u0e25\u0e14\u0e25\u0e07",
             steady: "\u0e04\u0e07\u0e17\u0e35\u0e48",
-            deltaMoved: " {d} \u0e21. \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
-            deltaSteady: " \u0e43\u0e19 5 \u0e19\u0e32\u0e17\u0e35\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
+            deltaMoved: " {d} \u0e21. \u0e43\u0e19 {m}\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
+            deltaSteady: " \u0e43\u0e19 {m}\u0e17\u0e35\u0e48\u0e1c\u0e48\u0e32\u0e19\u0e21\u0e32",
             showMarkers: "\u0e40\u0e2a\u0e49\u0e19\u0e23\u0e30\u0e14\u0e31\u0e1a\u0e19\u0e49\u0e33",
             backToLatest: "\u0e01\u0e25\u0e31\u0e1a\u0e44\u0e1b\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14",
             feedSource: "\u0e41\u0e2b\u0e25\u0e48\u0e07\u0e17\u0e35\u0e48\u0e21\u0e32\u0e02\u0e2d\u0e07\u0e01\u0e25\u0e49\u0e2d\u0e07",
             noImageTitle: "\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e40\u0e01\u0e47\u0e1a\u0e20\u0e32\u0e1e\u0e44\u0e27\u0e49",
             noImageBody: "\u0e20\u0e32\u0e1e\u0e16\u0e39\u0e01\u0e25\u0e1a\u0e2d\u0e2d\u0e01\u0e01\u0e48\u0e2d\u0e19\u0e04\u0e48\u0e32\u0e17\u0e35\u0e48\u0e27\u0e31\u0e14\u0e44\u0e14\u0e49\u0e21\u0e32\u0e01",
             noCaptureNear: "\u0e44\u0e21\u0e48\u0e21\u0e35\u0e20\u0e32\u0e1e\u0e17\u0e35\u0e48\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e43\u0e01\u0e25\u0e49\u0e08\u0e38\u0e14\u0e19\u0e31\u0e49\u0e19",
-            monthsShort: "\u0e14.",
             customRange: "\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e40\u0e2d\u0e07",
             rangeFrom: "\u0e15\u0e31\u0e49\u0e07\u0e41\u0e15\u0e48",
             rangeTo: "\u0e16\u0e36\u0e07",
@@ -1098,8 +1095,7 @@
             hours: "\u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07",
             minute: "\u0e19\u0e32\u0e17\u0e35",
             minutes: "\u0e19\u0e32\u0e17\u0e35",
-            months: "\u0e40\u0e14\u0e37\u0e2d\u0e19",
-            everyFiveMin: "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e17\u0e38\u0e01 5 \u0e19\u0e32\u0e17\u0e35",
+            everyRaw: "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e17\u0e38\u0e01 {d}",
             averagedEvery: "\u0e40\u0e09\u0e25\u0e35\u0e48\u0e22\u0e17\u0e38\u0e01 {d}",
             trendSub: "{h} \u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07\u0e25\u0e48\u0e32\u0e2a\u0e38\u0e14 \u00b7 \u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e17\u0e38\u0e01 5 \u0e19\u0e32\u0e17\u0e35",
             gaugeAt: "\u0e20\u0e32\u0e1e\u0e40\u0e27\u0e25\u0e32 {t}"
@@ -1381,15 +1377,31 @@
 
         // Say so when points are averages rather than single readings, so a
         // flattened line is never mistaken for a calm river.
+        var cadence = captureEvery();
         $("trendSub").textContent = state.bucket > 300
             ? label + " \u00b7 " + t("averagedEvery", { d: bucketLabel(state.bucket) })
-            : label + " \u00b7 " + t("everyFiveMin");
+            : cadence
+                ? label + " \u00b7 " + t("everyRaw", { d: bucketLabel(cadence) })
+                : label;
+    }
+
+    // How often this station is actually captured, read off the readings
+    // themselves rather than assumed: the collector's interval is configurable,
+    // and the median gap survives the odd cycle that could not be read.
+    function captureEvery() {
+        var gaps = [];
+        for (var i = 1; i < state.recent.length; i++) {
+            gaps.push(state.recent[i].timestamp - state.recent[i - 1].timestamp);
+        }
+        if (!gaps.length) return null;
+        gaps.sort(function (a, b) { return a - b; });
+        return gaps[Math.floor(gaps.length / 2)];
     }
 
     function presetLabel(days) {
-        if (days <= 1) return t("preset24h");
-        if (days >= 92) return "3 " + t("months");
-        return plural(days, "day");
+        // Anything longer than the presets is reached through Custom, which
+        // labels itself with its own two dates.
+        return days <= 1 ? t("preset24h") : plural(days, "day");
     }
 
     function bucketLabel(sec) {
@@ -1423,8 +1435,14 @@
             var word = document.createElement("strong");
             word.textContent = dir === "up" ? t("rising") : dir === "down" ? t("falling") : t("steady");
             $("deltaText").appendChild(word);
+            // The gap between the two readings being compared, rather than a
+            // fixed phrase: the collector's interval is configurable, and a
+            // caption that says five minutes while the readings are a quarter
+            // of an hour apart is simply wrong.
+            var span = bucketLabel(Math.max(60, latest.timestamp - prev.timestamp));
             $("deltaText").appendChild(document.createTextNode(
-                dir === "flat" ? t("deltaSteady") : t("deltaMoved", { d: signed(d) })
+                dir === "flat" ? t("deltaSteady", { m: span })
+                               : t("deltaMoved", { d: signed(d), m: span })
             ));
         }
 
