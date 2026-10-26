@@ -4,73 +4,95 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Calibrate · River Water Level</title>
-    <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#090F16" media="(prefers-color-scheme: dark)">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z' fill='%232a78d6'/%3E%3C/svg%3E">
     <style>
+        /* Notion-derived tokens, the same set the dashboard uses. The marker
+           colours below are not chrome: they tell a calibration point from the
+           detected line over a photograph, and are data encodings rather than
+           status styling. */
         :root {
             color-scheme: light;
-            --plane: #f9f9f7;
-            --surface: #fcfcfb;
-            --ink: #0b0b0b;
-            --ink-2: #52514e;
-            --ink-muted: #898781;
-            --hairline: rgba(11, 11, 11, .10);
-            --hairline-strong: rgba(11, 11, 11, .16);
-            --series: #2a78d6;
-            --wash: rgba(11, 11, 11, .04);
+            --plane: #FFFFFF;
+            --surface: #FFFFFF;
+            --wash: #F6F5F4;
+            --raised: #ECEBEA;
+            --ink: #000000;
+            --ink-2: #615D59;
+            --ink-muted: #726D69;
+            --ink-disabled: #A39E98;
+            --hairline: #E0E0E0;
+            --hairline-strong: rgba(0, 0, 0, .18);
+            --series: #0075DE;
+            --series-ink: #005BAB;
             --point: #15803d;
             --point-soft: rgba(21, 128, 61, .12);
             --detected: #be123c;
             --detected-soft: rgba(190, 18, 60, .10);
-            --rise: #b45309;
-            --rise-soft: rgba(180, 83, 9, .12);
-            --fall: #006300;
-            --r-lg: 16px;
-            --r-md: 10px;
-            --r-sm: 7px;
+            --rise: #000000;
+            --rise-soft: #F6F5F4;
+            --fall: #000000;
+            --r-sm: 4px;
+            --r-md: 8px;
+            --r-lg: 12px;
+            --shadow-sm:
+                rgba(0, 0, 0, 0.01) 0px 0.175px 1.041px 0px,
+                rgba(0, 0, 0, 0.02) 0px 0.8px 2.925px 0px,
+                rgba(0, 0, 0, 0.027) 0px 2.025px 7.847px 0px,
+                rgba(0, 0, 0, 0.04) 0px 4px 18px 0px;
+            --sans: NotionInter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                    Helvetica, Arial, sans-serif;
         }
 
         @media (prefers-color-scheme: dark) {
             :root:not([data-theme="light"]) {
                 color-scheme: dark;
-                --plane: #0d0d0d;
-                --surface: #1a1a19;
-                --ink: #ffffff;
-                --ink-2: #c3c2b7;
-                --ink-muted: #898781;
-                --hairline: rgba(255, 255, 255, .10);
-                --hairline-strong: rgba(255, 255, 255, .18);
-                --series: #3987e5;
-                --wash: rgba(255, 255, 255, .05);
+                --plane: #090F16;
+                --surface: #181D24;
+                --wash: #242930;
+                --raised: #242930;
+                --ink: #F5F9FE;
+                --ink-2: #9BA0A6;
+                --ink-muted: #9BA0A6;
+                --ink-disabled: #6B7076;
+                --hairline: #30353B;
+                --hairline-strong: #454B52;
+                --series: #0080F2;
+                --series-ink: #9ED0FF;
                 --point: #4ade80;
                 --point-soft: rgba(74, 222, 128, .14);
                 --detected: #fb7185;
                 --detected-soft: rgba(251, 113, 133, .12);
-                --rise: #ec835a;
-                --rise-soft: rgba(236, 131, 90, .14);
-                --fall: #0ca30c;
+                --rise: #F5F9FE;
+                --rise-soft: #242930;
+                --fall: #F5F9FE;
+                --shadow-sm: none;
             }
         }
 
         :root[data-theme="dark"] {
             color-scheme: dark;
-            --plane: #0d0d0d;
-            --surface: #1a1a19;
-            --ink: #ffffff;
-            --ink-2: #c3c2b7;
-            --ink-muted: #898781;
-            --hairline: rgba(255, 255, 255, .10);
-            --hairline-strong: rgba(255, 255, 255, .18);
-            --series: #3987e5;
-            --wash: rgba(255, 255, 255, .05);
+            --plane: #090F16;
+            --surface: #181D24;
+            --wash: #242930;
+            --raised: #242930;
+            --ink: #F5F9FE;
+            --ink-2: #9BA0A6;
+            --ink-muted: #9BA0A6;
+            --ink-disabled: #6B7076;
+            --hairline: #30353B;
+            --hairline-strong: #454B52;
+            --series: #0080F2;
+            --series-ink: #9ED0FF;
             --point: #4ade80;
             --point-soft: rgba(74, 222, 128, .14);
             --detected: #fb7185;
             --detected-soft: rgba(251, 113, 133, .12);
-            --rise: #ec835a;
-            --rise-soft: rgba(236, 131, 90, .14);
-            --fall: #0ca30c;
+            --rise: #F5F9FE;
+            --rise-soft: #242930;
+            --fall: #F5F9FE;
+            --shadow-sm: none;
         }
 
         * { box-sizing: border-box; }
@@ -79,8 +101,8 @@
             margin: 0;
             background: var(--plane);
             color: var(--ink);
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-            font-size: 15px;
+            font-family: var(--sans);
+            font-size: 16px;
             line-height: 1.5;
             -webkit-font-smoothing: antialiased;
         }
@@ -1286,7 +1308,7 @@
             ctx.beginPath();
             ctx.moveTo(0, y);
             ctx.lineTo(canvas.width, y);
-            ctx.strokeStyle = active ? (token("--series") || "#2a78d6") : pointColor;
+            ctx.strokeStyle = active ? (token("--series") || "#0075DE") : pointColor;
             ctx.lineWidth = active ? 3 : 2;
             ctx.stroke();
 
@@ -1297,7 +1319,7 @@
             if (active) {
                 ctx.beginPath();
                 ctx.arc(canvas.width - 26, y, 5, 0, Math.PI * 2);
-                ctx.fillStyle = active && i === dragIndex ? (token("--series") || "#2a78d6") : pointColor;
+                ctx.fillStyle = active && i === dragIndex ? (token("--series") || "#0075DE") : pointColor;
                 ctx.fill();
                 ctx.lineWidth = 2;
                 ctx.strokeStyle = "rgba(0,0,0,.6)";

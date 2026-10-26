@@ -17,68 +17,115 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pathumthani Water Level</title>
 <meta name="description" content="Real-time water level monitoring for the Pathumthani river gauge.">
-<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z' fill='%232a78d6'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#090F16" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c-4 5-7 8.5-7 12.5A7 7 0 0 0 12 22a7 7 0 0 0 7-7.5C19 10.5 16 7 12 2z' fill='%230075DE'/%3E%3C/svg%3E">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
+    /* ------------------------------------------------------------------
+       Notion-derived design system. Values come straight from the extraction:
+       primary #0075DE is the one chromatic accent, the neutrals are warm, and
+       surfaces are flat -- depth is a hairline, not a shadow.
+
+       The names are the ones the rest of this file and the chart already use,
+       so the system is swapped at the token layer rather than rewritten
+       through 700 lines of component CSS.
+       ------------------------------------------------------------------ */
     :root {
         color-scheme: light;
-        --plane: #f9f9f7;
-        --surface: #fcfcfb;
-        --ink: #0b0b0b;
-        --ink-2: #52514e;
-        --ink-muted: #898781;
-        --hairline: rgba(11, 11, 11, .10);
-        --hairline-strong: rgba(11, 11, 11, .16);
-        --grid: #e1e0d9;
-        --series: #2a78d6;
-        --track: #cde2fb;
-        --rise: #b45309;
-        --fall: #006300;
-        --steady: #52514e;
-        --wash: rgba(11, 11, 11, .04);
-        --r-lg: 16px;
-        --r-md: 10px;
-        --r-sm: 7px;
+
+        /* palette */
+        --plane: #FFFFFF;          /* canvas: the page */
+        --surface: #FFFFFF;        /* canvas: cards sit flat on it, held by a hairline */
+        --wash: #F6F5F4;           /* surface-alt: tracks, insets, alternating fills */
+        --raised: #ECEBEA;
+        --ink: #000000;
+        --ink-2: #615D59;          /* body */
+        /* The system puts neutral-1 (#A39E98) on "tertiary text, captions and
+           disabled states". As caption text it measures 2.66:1 on canvas and
+           2.44:1 on the alt surface -- under half of AA -- and captions here
+           carry times, units and axis labels. This is the lightest step on the
+           same warm grey line that still clears 4.5:1 on both surfaces; the
+           system's own value is kept for the disabled role it also names. */
+        --ink-muted: #726D69;
+        --ink-disabled: #A39E98;   /* neutral-1 */
+        --hairline: #E0E0E0;
+        --hairline-strong: rgba(0, 0, 0, .18);
+        --grid: #ECEBEA;
+        --series: #0075DE;         /* primary: the only chromatic accent */
+        --series-ink: #005BAB;     /* accent-2, for text on the tinted fill */
+        --track: #E6F3FE;          /* neutral-2 */
+
+        /* The system declares no error/success/warning ramp and says so: signal
+           state with weight and a glyph, not with an invented hue. Direction is
+           carried by the arrow and the word beside it, which were always there. */
+        --rise: #000000;
+        --fall: #000000;
+        --steady: #615D59;
+
+        /* radii: xs for text buttons, sm for filled, md for cards, pills elsewhere */
+        --r-sm: 4px;
+        --r-md: 8px;
+        --r-lg: 12px;
+
+        /* the four-layer micro shadow, for lifted overlays only */
+        --shadow-sm:
+            rgba(0, 0, 0, 0.01) 0px 0.175px 1.041px 0px,
+            rgba(0, 0, 0, 0.02) 0px 0.8px 2.925px 0px,
+            rgba(0, 0, 0, 0.027) 0px 2.025px 7.847px 0px,
+            rgba(0, 0, 0, 0.04) 0px 4px 18px 0px;
+
+        --sans: NotionInter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                Helvetica, Arial, sans-serif;
     }
 
+    /* The extraction measured one light theme; this is the dark palette its
+       own frontmatter derives, not an automatic inversion. Depth there is
+       border + surface rather than shadow, as the system specifies. */
     @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
             color-scheme: dark;
-            --plane: #0d0d0d;
-            --surface: #1a1a19;
-            --ink: #ffffff;
-            --ink-2: #c3c2b7;
-            --ink-muted: #898781;
-            --hairline: rgba(255, 255, 255, .10);
-            --hairline-strong: rgba(255, 255, 255, .18);
-            --grid: #2c2c2a;
-            --series: #3987e5;
-            --track: #0d366b;
-            --rise: #ec835a;
-            --fall: #0ca30c;
-            --steady: #c3c2b7;
-            --wash: rgba(255, 255, 255, .05);
+            --plane: #090F16;
+            --surface: #181D24;
+            --wash: #242930;
+            --raised: #242930;
+            --ink: #F5F9FE;
+            --ink-2: #9BA0A6;
+            --ink-muted: #9BA0A6;
+            --ink-disabled: #6B7076;
+            --hairline: #30353B;
+            --hairline-strong: #454B52;
+            --grid: #242930;
+            --series: #0080F2;
+            --series-ink: #9ED0FF;
+            --track: #14304B;
+            --rise: #F5F9FE;
+            --fall: #F5F9FE;
+            --steady: #9BA0A6;
+            --shadow-sm: none;
         }
     }
 
     :root[data-theme="dark"] {
         color-scheme: dark;
-        --plane: #0d0d0d;
-        --surface: #1a1a19;
-        --ink: #ffffff;
-        --ink-2: #c3c2b7;
-        --ink-muted: #898781;
-        --hairline: rgba(255, 255, 255, .10);
-        --hairline-strong: rgba(255, 255, 255, .18);
-        --grid: #2c2c2a;
-        --series: #3987e5;
-        --track: #0d366b;
-        --rise: #ec835a;
-        --fall: #0ca30c;
-        --steady: #c3c2b7;
-        --wash: rgba(255, 255, 255, .05);
+        --plane: #090F16;
+        --surface: #181D24;
+        --wash: #242930;
+        --raised: #242930;
+        --ink: #F5F9FE;
+        --ink-2: #9BA0A6;
+        --ink-muted: #9BA0A6;
+        --ink-disabled: #6B7076;
+        --hairline: #30353B;
+        --hairline-strong: #454B52;
+        --grid: #242930;
+        --series: #0080F2;
+        --series-ink: #9ED0FF;
+        --track: #14304B;
+        --rise: #F5F9FE;
+        --fall: #F5F9FE;
+        --steady: #9BA0A6;
+        --shadow-sm: none;
     }
 
     * { box-sizing: border-box; }
@@ -89,9 +136,9 @@
     body {
         margin: 0;
         background: var(--plane);
-        color: var(--ink);
-        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        font-size: 15px;
+        color: var(--ink-2);
+        font-family: var(--sans);
+        font-size: 16px;      /* body-lg */
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
     }
@@ -112,9 +159,9 @@
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 14px 24px;
-        background: color-mix(in srgb, var(--plane) 88%, transparent);
-        backdrop-filter: saturate(180%) blur(12px);
+        height: 64px;
+        padding: 0 24px;
+        background: var(--plane);
         border-bottom: 1px solid var(--hairline);
     }
 
@@ -189,8 +236,9 @@
     .station-switch a[aria-current="page"] {
         background: var(--surface);
         color: var(--ink);
-        font-weight: 600;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+        font-weight: 500;
+        border: 1px solid var(--hairline);
+        padding: 4px 13px;
     }
     @media (max-width: 760px) { .station-switch { display: none; } }
     .station-switch-mobile { display: none; margin-bottom: 18px; }
@@ -223,7 +271,8 @@
     .lang-switch button[aria-pressed="true"] {
         background: var(--surface);
         color: var(--ink);
-        box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+        border: 1px solid var(--hairline);
+        padding: 2px 7px;
     }
 
     .icon-btn {
@@ -242,23 +291,32 @@
 
     /* ---------- layout ---------- */
 
-    .page { max-width: 1240px; margin: 0 auto; padding: 24px 24px 56px; }
-    @media (max-width: 640px) { .page { padding: 18px 16px 40px; } }
+    /* Content width and side padding are the measured values at each
+       breakpoint, not a single max-width: the system scales the gutter rather
+       than letting the column run to the edge. */
+    /* Mobile-first, so each rule reads as the breakpoint the system names
+       rather than as the one below it. */
+    .page { max-width: 1229px; margin: 0 auto; padding: 24px 16px 40px; }
+    @media (min-width: 768px)  { .page { padding: 32px 58px 64px; } }
+    @media (min-width: 1024px) { .page { padding-left: 77px;  padding-right: 77px; } }
+    @media (min-width: 1280px) { .page { padding-left: 93px;  padding-right: 93px; } }
+    @media (min-width: 1440px) { .page { padding-left: 106px; padding-right: 106px; } }
 
     .notice {
         display: none;
         align-items: flex-start;
         gap: 9px;
         margin-bottom: 18px;
-        padding: 11px 14px;
-        border: 1px solid color-mix(in srgb, var(--rise) 35%, transparent);
-        background: color-mix(in srgb, var(--rise) 8%, transparent);
+        padding: 12px 16px;
+        border: 1px solid var(--hairline-strong);
+        background: var(--wash);
         border-radius: var(--r-md);
-        font-size: 13.5px;
+        font-size: 14px;
+        font-weight: 500;
         color: var(--ink);
     }
     .notice.is-shown { display: flex; }
-    .notice svg { width: 16px; height: 16px; flex: none; color: var(--rise); margin-top: 2px; }
+    .notice svg { width: 16px; height: 16px; flex: none; color: var(--ink); margin-top: 3px; }
 
     .now-panel {
         display: grid;
@@ -279,17 +337,19 @@
     .card {
         background: var(--surface);
         border: 1px solid var(--hairline);
-        border-radius: var(--r-lg);
-        padding: 22px;
+        border-radius: var(--r-lg);   /* rounded.md */
+        padding: 24px;                /* spacing.xl */
     }
-    @media (max-width: 640px) { .card { padding: 18px; } }
+    @media (max-width: 640px) { .card { padding: 16px; } }
 
     .card-eyebrow {
         display: flex;
         align-items: baseline;
         justify-content: space-between;
         gap: 12px;
-        font-size: 12.5px;
+        font-size: 12px;              /* caption */
+        font-weight: 500;
+        letter-spacing: .13px;
         color: var(--ink-muted);
         margin-bottom: 4px;
     }
@@ -303,11 +363,15 @@
         display: flex;
         align-items: baseline;
         gap: 8px;
-        margin: 6px 0 2px;
+        margin: 8px 0 4px;
+        color: var(--ink);
+        /* display-xxl: 96px / 600 / 1.04, tracking -4.6px. The tracking is a
+           defining trait of the system, so it is kept as a ratio of the size
+           (-4.6/96) and stays true as the figure scales down. */
         font-weight: 600;
-        letter-spacing: -.035em;
-        line-height: 1;
-        font-size: clamp(64px, 12vw, 96px);
+        letter-spacing: -.0479em;
+        line-height: 1.04;
+        font-size: clamp(42px, 11vw, 96px);
     }
     .hero-unit {
         font-size: .3em;
@@ -327,12 +391,15 @@
         background: var(--wash);
         color: var(--ink-2);
     }
-    .delta-arrow { font-size: 11px; line-height: 1; color: var(--steady); }
-    .delta strong { color: var(--ink); font-weight: 600; }
-    .delta[data-dir="up"] { background: color-mix(in srgb, var(--rise) 11%, transparent); }
-    .delta[data-dir="up"] .delta-arrow { color: var(--rise); }
-    .delta[data-dir="down"] { background: color-mix(in srgb, var(--fall) 11%, transparent); }
-    .delta[data-dir="down"] .delta-arrow { color: var(--fall); }
+    /* The system declares no status ramp and says to signal state with weight
+       or a glyph instead of an invented hue. Direction is carried by the arrow
+       and the word, which were always the accessible part of this; colour was
+       only ever reinforcing them. */
+    .delta-arrow { font-size: 12px; line-height: 1; color: var(--steady); }
+    .delta strong { color: var(--ink); font-weight: 500; }
+    .delta[data-dir="up"] .delta-arrow,
+    .delta[data-dir="down"] .delta-arrow { color: var(--ink); }
+    .delta[data-dir="up"], .delta[data-dir="down"] { background: var(--raised); }
 
     .meter { margin-top: 34px; }
     .meter-track {
@@ -398,7 +465,7 @@
         width: 44px; height: 44px;
         border-radius: 50%;
         background: var(--surface);
-        box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+        box-shadow: var(--shadow-sm);
         position: relative;
     }
     .frame-busy span::after {
@@ -546,8 +613,12 @@
         flex-wrap: wrap;
         margin: 34px 0 14px;
     }
-    .section-head h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
-    .section-head p { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-muted); }
+    /* heading-sm 22px / 700 / 1.27 / -0.25px */
+    .section-head h2 {
+        margin: 0; color: var(--ink);
+        font-size: 22px; font-weight: 700; line-height: 1.27; letter-spacing: -.25px;
+    }
+    .section-head p { margin: 4px 0 0; font-size: 14px; color: var(--ink-muted); }
 
     .segmented {
         display: inline-flex;
@@ -569,11 +640,14 @@
         transition: background .15s ease, color .15s ease;
     }
     .segmented button:hover { color: var(--ink); }
+    /* button-outline: canvas fill, hairline, full pill, weight 500 -- and flat.
+       Most things in this system carry no shadow at all. */
     .segmented button[aria-pressed="true"] {
         background: var(--surface);
         color: var(--ink);
-        font-weight: 600;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+        font-weight: 500;
+        border: 1px solid var(--hairline);
+        padding: 4px 13px;
     }
 
     .head-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -610,19 +684,23 @@
         border-radius: var(--r-sm);
         padding: 6px 9px;
     }
+    /* button-primary: 16px / 500, padding 6px 15px, rounded.sm, no shadow */
     .custom-range button {
         font: inherit;
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--surface);
+        font-size: 16px;
+        font-weight: 500;
+        line-height: 24px;
+        color: #FFFFFF;
         background: var(--series);
         border: 0;
-        border-radius: var(--r-sm);
-        padding: 7px 15px;
+        border-radius: var(--r-md);
+        padding: 6px 15px;
         cursor: pointer;
+        transition: opacity .2s ease;
     }
+    .custom-range button:hover { opacity: .75; }
     .range-note { font-size: 12px; color: var(--ink-muted); flex-basis: 100%; }
-    .range-note.is-error { color: var(--rise); font-weight: 600; }
+    .range-note.is-error { color: var(--ink); font-weight: 500; }
 
     .plot { position: relative; height: 340px; }
     @media (max-width: 640px) { .plot { height: 260px; } }
@@ -638,9 +716,12 @@
         border-top: 1px solid var(--hairline);
     }
     @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); gap: 16px 20px; } }
-    .kpi-label { font-size: 12.5px; color: var(--ink-muted); }
-    .kpi-value { font-size: 20px; font-weight: 600; letter-spacing: -.02em; margin-top: 1px; }
-    .kpi-value small { font-size: 12.5px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+    .kpi-label { font-size: 12px; font-weight: 500; letter-spacing: .13px; color: var(--ink-muted); }
+    .kpi-value {
+        font-size: 22px; font-weight: 700; line-height: 1.27; letter-spacing: -.25px;
+        color: var(--ink); margin-top: 2px;
+    }
+    .kpi-value small { font-size: 14px; font-weight: 400; color: var(--ink-2); margin-left: 3px; }
 
     details.table-view { margin-top: 18px; border-top: 1px solid var(--hairline); padding-top: 14px; }
     details.table-view summary {
@@ -711,8 +792,8 @@
         border-top: 1px solid var(--hairline);
         color: var(--ink-muted);
     }
-    .foot a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid var(--hairline-strong); }
-    .foot a:hover { color: var(--ink); }
+    .foot a { color: var(--ink-2); text-decoration: none; }
+    .foot a:hover, .foot a:focus { color: var(--series); text-decoration: underline; }
 
     @media (prefers-reduced-motion: reduce) {
         *, *::after { animation: none !important; transition: none !important; }
@@ -1813,7 +1894,7 @@
         chart.options.scales.y.ticks.color = token("--ink-2");
         chart.options.scales.y.title.color = token("--ink-muted");
         chart.options.scales.x.ticks.color = token("--ink-2");
-        chart.options.plugins.tooltip.backgroundColor = isDark() ? "#2c2c2a" : "#0b0b0b";
+        chart.options.plugins.tooltip.backgroundColor = isDark() ? "#242930" : "#000000";
     }
 
     function fillFor(chart, series) {
